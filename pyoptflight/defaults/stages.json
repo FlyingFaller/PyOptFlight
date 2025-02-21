@@ -1,0 +1,20 @@
+{
+    "Test": {
+        "aero": {
+            "C_D": 0.021,
+            "C_L": 0,
+            "A_ref": 1
+        },
+        "prop": {
+            "Isp": 300,
+            "F": 0.6
+        },
+        "constraints": {
+            "gamma_dot_max": 0.174533,
+            "beta_dot_max": 0.174533,
+            "f_min": 0.2
+        },
+        "m_0": 11.3,
+        "m_f": 1.3
+    }
+}

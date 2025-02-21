@@ -1,0 +1,74 @@
+{
+    "Earth": {
+        "r_0": 6378,
+        "g_0": 9.81e-3,
+        "mu": 3.986004418e5,
+        "psi": 7.292115e-5,
+        "atm": {
+            "rho_0": 1.225,
+            "H": 8.5,
+            "gamma": 1.4,
+            "R": 287.05,
+            "C_T": 288.15,
+            "cutoff_altitude": 100,
+            "color": "steelblue"
+        },
+        "meshpath": "mesh_images/Earth.jpg"
+    },
+    "Mars": {
+        "r_0": 3389.5,
+        "g_0": 3.73e-3,
+        "mu": 4.282837e4,
+        "psi": 7.088218e-5,
+        "atm": {
+            "rho_0": 0.02,
+            "H": 11.1,
+            "gamma": 1.29,
+            "R": 188.42,
+            "C_T": 210,
+            "cutoff_altitude": 80,
+            "color": "tan"
+        },
+        "meshpath": "mesh_images/Mars.jpg"
+    },
+    "Venus": {
+        "r_0": 6051.8,
+        "g_0": 8.872e-3,
+        "mu": 3.24859e5,
+        "psi": -2.99236919e-7,
+        "atm": {
+            "rho_0": 65,
+            "H": 15600,
+            "gamma": 1.4,
+            "R": 189,
+            "C_T": 735.15,
+            "cutoff_altitude": 250,
+            "color": "gold"
+        },
+        "meshpath": "mesh_images/Venus.jpg"
+    },
+    "Moon": {
+        "r_0": 1737.4,
+        "g_0": 1.625e-3,
+        "mu": 4.90280e3,
+        "psi": 2.66186e-6,
+        "atm": null,
+        "meshpath": "mesh_images/Moon.jpg"
+    },
+    "Kerbin": {
+        "r_0": 600,
+        "g_0": 9.81e-3,
+        "mu": 3.5316000e3,
+        "psi": 2.915709e-4,
+        "atm": {
+            "rho_0": 1.225,
+            "H": 5.6,
+            "gamma": 1.4,
+            "R": 287.05,
+            "C_T": 288.15,
+            "cutoff_altitude": 75,
+            "color": "steelblue"
+        },
+        "meshpath": "mesh_images/Kerbin.jpg"
+    }
+}
