@@ -95,9 +95,9 @@ pos0 = ca.vertcat(0.2,5)
 r0 = 1
 
 # setting the initial position looks like
-X0 = ca.MX.sym("X0",nx)
-p.append(X0)
-p_val.append(ca.vertcat(0,0,pi/2))
+# X0 = ca.MX.sym("X0",nx)
+# p.append(X0)
+# p_val.append(ca.vertcat(0,0,pi/2))
 
 f = sum(T) # Time Optimal objective
 for k in range(N):
@@ -145,7 +145,7 @@ nlp = {}
 nlp["f"] = T[-1]
 nlp["g"] = ca.vcat(g)
 nlp["x"] = ca.vcat(x)
-nlp["p"] = ca.vcat(p)
+# nlp["p"] = ca.vcat(p)
 
 options = {}
 options["expand"] = True
@@ -166,5 +166,5 @@ res = solver(x0 = ca.vcat(x0),
     ubg = ca.vcat(ubg),
     lbx = ca.vcat(lbx),
     ubx = ca.vcat(ubx),
-    p = ca.vcat(p_val)
+    # p = ca.vcat(p_val)
 )
