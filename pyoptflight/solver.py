@@ -200,27 +200,66 @@ class Solver(AutoRepr):
 
         nx = x.size1() # Number of states (7)
         nu = u.size1() # number of control vars (3)
-        npar = self.nstages # Extra unknowns (1 for each time T)
+        # npar = self.nstages # Extra unknowns (1 for each time T)
+        N_tot = sum(self.N)
 
-        # Decision variables V has arangment [T0...Tk, U00...U0N,...,Uk0...UkN, X00...X0N+1,...,Xk0...XkN+1]
-        V = ca.MX.sym('X', npar + self.Nu*nu + self.Nx*nx)
+        # Decision variables V has arangment [T0, x00, u00, T0, x01, u01 ... Tk, xkN, ukN,  Tk, xkN+1] ...
+        V = ca.MX.sym('X', (N_tot + self.nstages)*(nx + 1) + (N_tot + self.nstages - 1) * nu) ### Stores N+1 nx, N+1 T, and N u (N is sum of all Ns)
         # Each stages X seperated out shape(nstages, (N+1), nx)
-        X = [[V[npar + self.Nu*nu + nx*(sum(self.N[0:k]) + k) + i*nx : npar + self.Nu*nu + nx*(sum(self.N[0:k]) + k) + (i+1)*nx] 
-            for i in range(0, self.N[k]+1)] 
-            for k in range(0, self.nstages)]
+
+        print(f'{V.size1() = }')
+
+        X = []
+        U = []
+        T_arr = []
+        for k in range(0, self.nstages):
+            X_stage = []
+            U_stage = []
+            T_stage = []
+            past_N = sum(self.N[0:k])
+            past_txu = (nx+nu+1)*(past_N + k) # all previous T, X, U
+            for i in range(0, self.N[k] + 1):
+                txu_start  = i*(nx + nu + 1)
+                txu_end = (i+1)*(nx + nu + 1)
+                T_stage.append(V[past_txu + txu_start])
+                X_stage.append(V[past_txu + txu_start + 1 : past_txu + txu_end - nu])
+                if k+1 < self.nstages or i+1 < self.N[k]+1: # If not last point of last stage
+                    U_stage.append(V[past_txu + txu_start + nx + 1 : past_txu + txu_end])
+
+            X.append(X_stage)
+            U.append(U_stage)
+            T_arr.append(T_stage)
+
+        print(f'{len(T_arr) = }')
+        print(f'{len(T_arr[0]) = }')
+        print(f'{len(X) = }')
+        print(f'{len(X[0]) = }')
+        print(f'{len(U) = }')
+        print(f'{len(U[0]) = }')
+        # X = [[V[npar + nu*(sum(self.N[0:k])) + nx*(sum(self.N[0:k]) + k) + i*(nx+nu) : npar + nu*(sum(self.N[0:k])) + nx*(sum(self.N[0:k]) + k) + (i+1)*(nx+nu)] 
+        #     for i in range(0, self.N[k])] 
+        #     for k in range(0, self.nstages)]
         # All stages U lumped together: shape(nstages, N, nu)
-        U = [[V[npar + nu*sum(self.N[0:k]) + i*nu : npar + nu*sum(self.N[0:k]) + (i+1)*nu] 
-            for i in range(0, self.N[k])]
-            for k in range(0, self.nstages)]
+        # U = [[V[npar + nu*sum(self.N[0:k]) + i*nu : npar + nu*sum(self.N[0:k]) + (i+1)*nu] 
+        #     for i in range(0, self.N[k])]
+        #     for k in range(0, self.nstages)]
         
         ##################
         ### INITIALIZE ###
         ##################
 
         # Initialize time states
-        x0 = self.T_init.copy()
-        lbx = self.T_min.copy()
-        ubx = self.T_max.copy()
+        # x0 = self.T_init.copy()
+        # lbx = self.T_min.copy()
+        # ubx = self.T_max.copy()
+
+        # Initialize empty x0, lbx, and ubx instead
+        x0 = []
+        lbx = []
+        ubx = []
+
+        # New equality list of fatrop constraints
+        equality = []
 
         # Bounds from boundary points
         xb_0 = self.x0.get_xb(X[0][0], self)
@@ -228,11 +267,21 @@ class Solver(AutoRepr):
         xb_f = self.xf.get_xb(X[-1][-1], self)
         gb_f = self.xf.get_gb(X[-1][-1], self)
 
-        # Add constraints associated with boundary points
+        # Add constraints associated with boundary points if any, fatrop might expect gap closing first
         # Create constraint lists
-        G = gb_0['g'] + gb_f['g']
-        lbg = gb_0['lbg'] + gb_f['lbg']
-        ubg = gb_0['ubg'] + gb_f['ubg']
+        G: List = gb_0['g'] + gb_f['g']
+        lbg: List = gb_0['lbg'] + gb_f['lbg']
+        ubg: List = gb_0['ubg'] + gb_f['ubg']
+        for (ub, lb) in zip(ubg, lbg):
+            if ub == lb:
+                equality.append(True)
+            else:
+                equality.append(False)
+
+        print(f'{len(G) = }')
+        print(f'{len(ubg) = }')
+        print(f'{len(lbg) = }')
+
 
         # Free state
         # lbx_free = np.min([xb_0['lbx'], xb_f['lbx']], axis=0).tolist()
@@ -245,11 +294,11 @@ class Solver(AutoRepr):
         # May modify to support initial/final orientation
         # Orientation is already essentially maintained through staging
         # Throttle/orientation are not provided for directly before staging whatsoever
-        for k in range(0, self.nstages):
-            for i in range(0, self.N[k]):
-                x0 += self.sols[-1][k].U[i]
-                lbx += [0.0, -ca.pi, 0.0]
-                ubx += [1.0, ca.pi,  ca.pi]
+        # for k in range(0, self.nstages):
+        #     for i in range(0, self.N[k]):
+        #         x0 += self.sols[-1][k].U[i]
+        #         lbx += [0.0, -ca.pi, 0.0]
+        #         ubx += [1.0, ca.pi,  ca.pi]
 
         ########################
         ### BEGIN STAGE LOOP ###
@@ -300,36 +349,49 @@ class Solver(AutoRepr):
                 int_opts = dict_of_int_opts[self.config.integration_method]
                 I = ca.integrator('I', self.config.integration_method, dae, 0.0, 1.0, int_opts)
                 ### BUILD G ###
-                for i in range(0, self.N[k]):
-                    x_next = I(x0=X[k][i], p=ca.vertcat(U[k][i], V[k]))
-                    G.append(x_next['xf'] - X[k][i+1])
-                    lbg += nx*[0]
-                    ubg += nx*[0]
+                for i in range(0, self.N[k]): # Only grab first N u's we disregard the N+1 u
+                    x_next = I(x0=X[k][i], p=ca.vertcat(U[k][i], T_arr[k][i]))
+                    G.append(x_next['xf'] - X[k][i+1]) # Gap closing on x
+                    G.append(T_arr[k][i+1] - T_arr[k][i]) # Gap closing on T
+                    lbg += (nx+1)*[0]
+                    ubg += (nx+1)*[0]
+                    equality += (nx+1)*[True]
+                    
 
             elif self.config.integration_method == 'RK4':
                 print(f'RUNNING {self.config.integration_method} METHOD')
                 ### BUILD INTEGRATOR ###
                 odef = ca.Function('f', [x, u], [ode])
-                dt = V[k]/self.N[k]
                 ### BUILD G ###
                 for i in range(self.N[k]):
+                    dt = T_arr[k][i]/self.N[k]
                     k1 = odef(X[k][i], U[k][i])
                     k2 = odef(X[k][i] + dt/2 * k1, U[k][i])
                     k3 = odef(X[k][i] + dt/2 * k2, U[k][i])
                     k4 = odef(X[k][i] + dt * k3, U[k][i])
                     x_next = X[k][i] + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
-                    G.append(x_next - X[k][i+1])
-                    lbg += nx*[0]
-                    ubg += nx*[0]
+                    G.append(x_next - X[k][i+1]) # Gap closing on x
+                    G.append(T_arr[k][i+1] - T_arr[k][i]) # Gap closing on T
+                    lbg += (nx+1)*[0]
+                    ubg += (nx+1)*[0]
+                    equality += (nx+1)*[True]
             else:
                 print('Not a valid integration method!')
                 return
 
             # Force equality between every part of state except mass during staging
+            # Force equality between extra u in every stage but last one
+            # That is u_N == u_N+1 (N+1 u shouldn't even exist but here we are)
             if k+1 < self.nstages: # If this is not the last stage
                 G.append(X[k+1][0][1:] - X[k][-1][1:])
                 lbg += (nx-1)*[0]
                 ubg += (nx-1)*[0]
+                equality += (nx-1)*[True]
+
+                G.append(U[k][-1] - U[k][-2])
+                lbg += nu*[0]
+                ubg += nu*[0]
+                equality += nu*[True]
 
             ### CONSTRUCT BOUNDS ON STATE AND CONSTRAINT ###
             # lbx and ubx constrained at X[0][0] and X[-1][-1] by x0 and xf get_xb
@@ -356,11 +418,28 @@ class Solver(AutoRepr):
                 lbx_f = [m_f, *lbx_free]
                 ubx_f = [m_f, *ubx_free]
 
-            lbx += lbx_0 + (self.N[k]-1)*[m_f, *lbx_free] + lbx_f
-            ubx += ubx_0 + (self.N[k]-1)*[m_0, *ubx_free] + ubx_f
+            lbx_u = [0.0, -ca.pi, 0.0]
+            ubx_u = [1.0, ca.pi,  ca.pi]
 
-            for i in range(0, self.N[k]+1):
-                x0 += self.sols[-1][k].X[i]
+            T_min = [self.T_min[k]]
+            T_max = [self.T_max[k]]
+            T_init = [self.T_init[k]]
+
+            if k+1 < self.nstages: # include extraneous u bound
+                lbx += T_min + lbx_0 + lbx_u + (self.N[k]-1)*(T_min + [m_f] + lbx_free + lbx_u) + T_min + lbx_f + lbx_u
+                ubx += T_max + ubx_0 + ubx_u + (self.N[k]-1)*(T_max + [m_0] + ubx_free + ubx_u) + T_max + ubx_f + ubx_u
+            else: # don't include extraneous u bound
+                lbx += T_min + lbx_0 + lbx_u + (self.N[k]-1)*(T_min + [m_f] + lbx_free + lbx_u) + T_min + lbx_f
+                ubx += T_max + ubx_0 + ubx_u + (self.N[k]-1)*(T_max + [m_0] + ubx_free + ubx_u) + T_max + ubx_f
+
+            for i in range(0, self.N[k]):
+                x0 += T_init # Add T
+                x0 += self.sols[-1][k].X[i] # Add x
+                x0 += self.sols[-1][k].U[i] # Add u
+            x0 += T_init # Add last T
+            x0 += self.sols[-1][k].X[-1] # Add last N + 1 x
+            if k+1 < self.nstages: # If not last stage 
+                x0 += self.sols[-1][k].U[-1] # Duplicate last U 
 
         print(f'End of constructor loop time: {time.time()-start_time}')
 
@@ -370,18 +449,18 @@ class Solver(AutoRepr):
         ### SOLVE ###
         ### TODO: Proper handling of verbosity
         nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
-        opts = {
-            'ipopt.print_level': 5,
-            'print_time': True,
-            'ipopt.bound_relax_factor': self.config.bound_relax_factor,
-            'ipopt.check_derivatives_for_naninf': 'no',
-            'ipopt.nlp_scaling_method': self.config.nlp_scaling_method,
-            'ipopt.tol': self.config.solver_tol,
-            'ipopt.max_iter': self.config.max_iter,
-            'ipopt.mumps_mem_percent': self.config.mumps_mem_percent,
-            'expand': self.config.integration_method == 'RK4',
-        }
-        opts.update(self.extra_opts)
+        # opts = {
+        #     'ipopt.print_level': 5,
+        #     'print_time': True,
+        #     'ipopt.bound_relax_factor': self.config.bound_relax_factor,
+        #     'ipopt.check_derivatives_for_naninf': 'no',
+        #     'ipopt.nlp_scaling_method': self.config.nlp_scaling_method,
+        #     'ipopt.tol': self.config.solver_tol,
+        #     'ipopt.max_iter': self.config.max_iter,
+        #     'ipopt.mumps_mem_percent': self.config.mumps_mem_percent,
+        #     'expand': self.config.integration_method == 'RK4',
+        # }
+        # opts.update(self.extra_opts)
 
         # nlpsolver = ca.nlpsol(
         #     'nlpsolver', 'ipopt', nlp, opts
@@ -392,7 +471,7 @@ class Solver(AutoRepr):
             'fatrop': {"mu_init": 0.1},
             'structure_detection': 'auto',
             'debug': True,
-            'equality': len(lbg)*[True]
+            'equality': equality
         }
         nlpsolver = ca.nlpsol(
             'nlpsolver', 'fatrop', nlp, fatrop_opts
@@ -413,14 +492,21 @@ class Solver(AutoRepr):
         
         intersols = []
         for k in range(0, self.nstages):
-            u_start = npar + sum(self.N[0:k])*nu
-            u_end = npar + sum(self.N[0:k+1])*nu
-            x_start = npar + self.Nu*nu + (sum(self.N[0:k]) + k)*nx
-            x_end = npar + self.Nu*nu + (sum(self.N[0:k+1]) + k + 1)*nx
+            x_res = []
+            u_res = []
+            past_N = sum(self.N[0:k])
+            past_xu = nx*(past_N + k) + nu*past_N # N+1 nx, N nu
+            total_offset = self.nstages + past_xu
+            for i in range(0, self.N[k]):
+                xu_start  = i*(nx + nu)
+                xu_end = (i+1)*(nx + nu)
+                x_res.append(np.array(V_res[total_offset + xu_start : total_offset + xu_end - nu]).flatten().tolist())
+                u_res.append(np.array(V_res[total_offset + xu_start + nx : total_offset + xu_end]).flatten().tolist())
+                if i+1 == self.N[k]: # if last control point, add extra x so it is N+1
+                    x_res.append(np.array(V_res[total_offset + xu_end: total_offset + xu_end + nx]).flatten().tolist())
+
             T_res = float(V_res[k])
             t_res = np.linspace(0, T_res, self.N[k] + 1).tolist()
-            u_res = np.array(V_res[u_start : u_end]).reshape((self.N[k], nu)).tolist()
-            x_res = np.array(V_res[x_start: x_end]).reshape((self.N[k]+1, nx)).tolist()
             sol = Solution(X=x_res,
                             U=u_res,
                             stage=k+1,
