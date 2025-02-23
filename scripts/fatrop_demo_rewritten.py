@@ -44,10 +44,16 @@ nx = x.numel()
 nu = u.numel()
 
 # Decision variables
+# New order [x, t, u]
 V = ca.MX.sym('V', (nx+nu+1)*N + nx + 1)
-X = [V[(nx+nu+1)*i+1 : (nx+nu+1)*(i+1)-nu] for i in range(N+1)]
+# X = [V[(nx+nu+1)*i+1 : (nx+nu+1)*(i+1)-nu] for i in range(N+1)]
+# U = [V[(nx+nu+1)*i+nx+1 : (nx+nu+1)*(i+1)] for i in range(N)]
+# T = [V[(nx+nu+1)*i] for i in range(N+1)]
+
+X = [V[(nx+nu+1)*i : (nx+nu+1)*(i+1)-nu-1] for i in range(N+1)]
 U = [V[(nx+nu+1)*i+nx+1 : (nx+nu+1)*(i+1)] for i in range(N)]
-T = [V[(nx+nu+1)*i] for i in range(N+1)]
+T = [V[(nx+nu+1)*i+1] for i in range(N+1)]
+
 
 G = []
 lbg = []
