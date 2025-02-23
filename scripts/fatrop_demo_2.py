@@ -35,9 +35,9 @@ intg = ca.integrator('intg', 'rk',
 nx = x.numel()
 nu = u.numel()
 
-#############################################
-### EVERYTHING BELOW THIS POINT IS FUCKED ###
-#############################################
+#######################################################
+### EVERYTHING BELOW THIS POINT IS *NOW LESS FUCKED ###
+#######################################################
 
 x0 = [] # Initial value
 lbx = []
@@ -51,15 +51,17 @@ equality = [] # Boolean indicator helping structure detection
 N = 20
 T0 = 10
 
-V = [] # all decision variables
-X = [] # all states (symbolic)
-U = [] # all controls (symbolic)
-T = [] # all times (symbolic)
+V = ca.MX.sym('V', (N+1)*nx + (N+1)*1 + N*nu)
+X = [V[(nx+nu+1)*i : (nx+nu+1)*(i+1) - nu - 1] for i in range(N+1)]
+U = [V[(nx+nu+1)*i + nx + 1 : (nx+nu+1)*(i+1)] for i in range(N)]
+T = [V[(nx+nu+1)*i + nx] for i in range(N+1)]
+# nx = 3
+# nu = 2
+#  0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15
+# [x1, x2, x3, t1, u1, u2, x1, x2, x3, t1, u1, u2, x1, x2, x3, t1]
+
 for k in range(N+1):
-    x_sym = ca.MX.sym("x_sym",nx) # sym is now essentially what old x was
-    V.append(x_sym) # append nx symbolic states to x
-    X.append(x_sym) # append nx symbolic states to X what is really the difference between x and X anymore??
-    x0.append(ca.vertcat(0, k*T0/N, ca.pi/2)) # some sort of init guess for x0 which is only states for now 
+    x0 += [0, k*T0/N, ca.pi/2]
     if k == 0:
         lbx += [0, 0, 0]
         ubx += [0, 0, 0]
@@ -71,23 +73,15 @@ for k in range(N+1):
         ubx += 3*[ca.inf] # Looks like the states are unbounded essentially
     
     # this whole bit is about adding a T for every state
-    T_sym = ca.MX.sym("T_sym") # god help us he's reusing sym as a variable name
-    V.append(T_sym)
-    T.append(T_sym)
     x0.append(T0)
     lbx.append(0)
     ubx.append(ca.inf)
     
     # add in control initial and limits N times so structure looks like [x, T, u], [x, T, u], [x, T, u], ... [x, T]
     if k<N:
-        u_sym = ca.MX.sym("u_sym",nu)
-        V.append(u_sym)
-        U.append(u_sym)
-        x0.append(ca.vertcat(0, 1))
-        lbx.append(-ca.pi/6)
-        ubx.append(ca.pi/6) # -pi/6 <= delta<= pi/6
-        lbx.append(0)
-        ubx.append(1) # 0 <= vel <=1
+        x0 += [0, 1]
+        lbx += [-ca.pi/6, 0]
+        ubx += [ca.pi/6, 1]
 
 # could everything above be done is like 6 lines and be more readable? yes. Is this approach better? no....wait a minute.
 
@@ -98,13 +92,14 @@ r0 = 1
 f = sum(T) # Time Optimal objective
 for k in range(N):
     # Multiple shooting gap-closing constraint
-    G.append(X[k+1] - intg(x0=X[k], u=U[k], p=T[k]/N)['xf'])
-    lbg.append(ca.DM.zeros(nx, 1))
-    ubg.append(ca.DM.zeros(nx, 1))
+    G.append(X[k+1] - intg(x0=X[k], u=U[k], p=T[k]/N)['xf']) # MUST BE IN FORM X[i+1] = F(X[i]) !!!
+    lbg += nx*[0]
+    ubg += nx*[0]
+
     equality += [True]*nx # added equality constraint for gap closing 
     
     # each time is force equal to eachother by similar gap closing means 
-    G.append(T[k+1]-T[k])
+    G.append(T[k+1]-T[k]) # MUST BE IN FORM X[i+1] = F(X[i]) !!!
     lbg.append(0)
     ubg.append(0)
     equality += [True]
@@ -112,11 +107,9 @@ for k in range(N):
     # Obstacle avoidance
     pos = X[k][:2]
     G.append(ca.sumsqr(pos-pos0))
-    lbg.append(r0**2);ubg.append(ca.inf)
+    lbg.append(r0**2)
+    ubg.append(ca.inf)
     equality += [False]
-    
-print(f'{X[0][0] = }')
-print(f'{x0 = }')
 
 # Solve the problem
 
@@ -129,12 +122,12 @@ fatrop_opts = {
 }
 
 opt_func = T[-1]
-nlp = {'x': ca.vcat(V), 'f': opt_func, 'g': ca.vcat(G)}
+nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
 solver = ca.nlpsol('solver',"fatrop", nlp, fatrop_opts)
 
-res = solver(x0 = ca.vcat(x0),
-    lbg = ca.vcat(lbg),
-    ubg = ca.vcat(ubg),
-    lbx = ca.vcat(lbx),
-    ubx = ca.vcat(ubx),
+res = solver(x0 = x0,
+    lbg = lbg,
+    ubg = ubg,
+    lbx = lbx,
+    ubx = ubx,
 )
