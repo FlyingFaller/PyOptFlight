@@ -370,7 +370,7 @@ class Solver(AutoRepr):
                     k3 = odef(X[k][i] + dt/2 * k2, U[k][i])
                     k4 = odef(X[k][i] + dt * k3, U[k][i])
                     x_next = X[k][i] + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
-                    G.append(x_next - X[k][i+1]) # Gap closing on x
+                    G.append(x_next - X[k][i+1]) # Gap closing on x TODO:FIXME: MUST BE IN FORM X[i+1] = F(X[i]) !!!
                     G.append(T_arr[k][i+1] - T_arr[k][i]) # Gap closing on T
                     lbg += (nx+1)*[0]
                     ubg += (nx+1)*[0]
