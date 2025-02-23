@@ -12,7 +12,7 @@ T0 = 10
 
 # Initial pos/angle
 p0 = [0, 0, 0]
-pf = [0, 1, 0]
+pf = [0, 10, 0]
 
 # Spherical obstacle 
 p_obs = [0.2, 5]
@@ -21,8 +21,8 @@ r_obs = 1
 # Control limits
 vel_min = 0
 vel_max = 1
-delta_min = ca.pi/6
-delta_max = -ca.pi/6
+delta_min = -ca.pi/6
+delta_max = ca.pi/6
 
 # symbolic states
 x = ca.SX.sym('[px, py, theta]', 3, 1)
@@ -52,7 +52,7 @@ V = ca.MX.sym('V', (nx+nu+1)*N + nx + 1)
 
 X = [V[(nx+nu+1)*i : (nx+nu+1)*(i+1)-nu-1] for i in range(N+1)]
 U = [V[(nx+nu+1)*i+nx+1 : (nx+nu+1)*(i+1)] for i in range(N)]
-T = [V[(nx+nu+1)*i+1] for i in range(N+1)]
+T = [V[(nx+nu+1)*i+nx] for i in range(N+1)]
 
 
 G = []
@@ -76,18 +76,18 @@ x0 = []
 for i in range(N+1):
     # [T, px, py, ]
     if i == 0: # First state
-        lbx += [0, p0[0], p0[1], p0[2], delta_min, vel_min]
-        ubx += [ca.inf, p0[0], p0[1], p0[2], delta_max, vel_max]
+        lbx += [p0[0], p0[1], p0[2], 0, delta_min, vel_min]
+        ubx += [p0[0], p0[1], p0[2], ca.inf, delta_max, vel_max]
     elif i == N: # Last state
-        lbx += [0, pf[0], pf[1], pf[2]]
-        ubx += [ca.inf, pf[0], pf[1], pf[2]]
+        lbx += [pf[0], pf[1], pf[2], 0]
+        ubx += [pf[0], pf[1], pf[2], ca.inf]
     else: # In between states
-        lbx += [0, -ca.inf, -ca.inf, -ca.inf, delta_min, vel_min]
+        lbx += [-ca.inf, -ca.inf, -ca.inf, 0, delta_min, vel_min]
         ubx += [ca.inf, ca.inf, ca.inf, ca.inf, delta_max, vel_max]
 
     if i < N:
         # initial states
-        x0 += [T0, 0, i*T0/N, ca.pi/2, 0, 1] # Should probably fix px/py init to be a real lin interp
+        x0 += [0, i*T0/N, ca.pi/2, T0, 0, 1] # Should probably fix px/py init to be a real lin interp
 
         # Do gap closing here
         dt = T[i]/N
@@ -99,7 +99,7 @@ for i in range(N+1):
 
         # x_next = intg(x0=X[i], u=U[i], p=dt)['xf']
 
-        G.append(x_next - X[i+1]) # Gap closing on x
+        G.append(X[i+1]- x_next) # Gap closing on x ATTENTION: MUST BE IN FORM X[i+1] = F(X[i]) !!!
         G.append(T[i+1] - T[i]) # Gap closing on T
         lbg += (nx+1)*[0]
         ubg += (nx+1)*[0]
@@ -112,7 +112,7 @@ for i in range(N+1):
         ubg.append(ca.inf)
         equality += [False]
     else:
-        x0 += [T0, 0, i*T0/N, ca.pi/2] # Should probably fix px/py init to be a real lin interp
+        x0 += [0, i*T0/N, ca.pi/2, T0] # Should probably fix px/py init to be a real lin interp
 
 opt_func = sum(T)
 
@@ -133,9 +133,9 @@ nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
 
 solver = ca.nlpsol('solver',"fatrop", nlp, fatrop_opts)
 
-res = solver(x0 = ca.vcat(x0),
-    lbg = ca.vcat(lbg),
-    ubg = ca.vcat(ubg),
-    lbx = ca.vcat(lbx),
-    ubx = ca.vcat(ubx),
+res = solver(x0 = x0,
+    lbg = lbg,
+    ubg = ubg,
+    lbx = lbx,
+    ubx = ubx,
 )
