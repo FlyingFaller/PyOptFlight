@@ -469,8 +469,6 @@ class Solver(AutoRepr):
         fatrop_opts = {
             'expand': True,
             'fatrop': {"mu_init": 0.1},
-            'ipopt.tol': 1e-4, 
-            'ipopt.max_iter': 250,
             'structure_detection': 'auto',
             'debug': True,
             'equality': equality
@@ -666,16 +664,24 @@ class Solver(AutoRepr):
         ### TODO: Proper handling of verbosity
         nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
 
-        fatrop_opts = {
-            'expand': True,
-            'fatrop': {"mu_init": 0.1},
-            'structure_detection': 'auto',
-            'debug': True,
-            'equality': equality
-        }
-        nlpsolver = ca.nlpsol(
-            'nlpsolver', 'fatrop', nlp, fatrop_opts
-        )
+        if self.extra_opts.get('solver') == 'ipopt':
+            ipopt_opts = {
+                'expand': True
+            }
+            nlpsolver = ca.nlpsol(
+                'nlpsolver', 'ipopt', nlp, ipopt_opts
+                )
+        else:
+            fatrop_opts = {
+                'expand': True,
+                'fatrop': {"mu_init": 0.1},
+                'structure_detection': 'auto',
+                'debug': True,
+                'equality': equality
+            }
+            nlpsolver = ca.nlpsol(
+                'nlpsolver', 'fatrop', nlp, fatrop_opts
+            )
 
         print(f'Construction of NLP: {time.time()-start_time}')
 

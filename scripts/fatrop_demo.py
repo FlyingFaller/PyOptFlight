@@ -1,7 +1,9 @@
 print('\nRunning demo!\n')
 
+import time as time
 import casadi as ca
-from numpy import sin, cos, tan, pi
+
+start_time = time.time()
 
 pos = ca.MX.sym('pos',2) # position
 theta = ca.MX.sym('theta') # angle
@@ -21,7 +23,7 @@ L = 1 # L? Length of bike
 # Bicycle model
 # (S. LaValle. Planning Algorithms. Cambridge University Press, 2006, pp. 724–725.)
 
-ode = ca.vertcat(V*ca.vertcat(cos(theta), sin(theta)), V/L*tan(delta)) # ODE
+ode = ca.vertcat(V*ca.vertcat(ca.cos(theta), ca.sin(theta)), V/L*ca.tan(delta)) # ODE
 
 # Discretize system
 dt = ca.MX.sym("dt")
@@ -51,7 +53,7 @@ equality = [] # Boolean indicator helping structure detection
 p = [] # Parameters
 p_val = [] # Parameter values
 
-N = 20
+N = 50
 T0 = 10
 
 X = [] # all states (symbolic)
@@ -61,7 +63,7 @@ for k in range(N+1):
     sym = ca.MX.sym("X",nx) # sym is now essentially what old x was
     x.append(sym) # append nx symbolic states to x
     X.append(sym) # append nx symbolic states to X what is really the difference between x and X anymore??
-    x0.append(ca.vertcat(0,k*T0/N,pi/2)) # some sort of init guess for x0 which is only states for now 
+    x0.append(ca.vertcat(0,k*T0/N,ca.pi/2)) # some sort of init guess for x0 which is only states for now 
     if k == 0:
         lbx += [0, 0, 0]
         ubx += [0, 0, 0]
@@ -85,7 +87,7 @@ for k in range(N+1):
         x.append(sym)
         U.append(sym)
         x0.append(ca.vertcat(0,1))
-        lbx.append(-pi/6);ubx.append(pi/6) # -pi/6 <= delta<= pi/6
+        lbx.append(-ca.pi/6);ubx.append(ca.pi/6) # -pi/6 <= delta<= pi/6
         lbx.append(0);ubx.append(1) # 0 <= V<=1
 
 # could everything above be done is like 6 lines and be more readable? yes. Is this approach better? no....wait a minute.
@@ -155,11 +157,14 @@ options["debug"] = False
 options["equality"] = equality
 
 # (codegen of helper functions)
-#options["jit"] = True
-#options["jit_temp_suffix"] = False
-#options["jit_options"] = {"flags": ["-O3"],"compiler": "ccache gcc"}
+# options["jit"] = True
+# options["jit_temp_suffix"] = False
+# options["jit_options"] = {"flags": ["-O3"],"compiler": "ccache gcc"}
 
-solver = ca.nlpsol('solver',"fatrop",nlp,options)
+solver = ca.nlpsol('solver', "fatrop", nlp, options)
+# solver = ca.nlpsol('solver', 'ipopt', nlp, {'expand': True})
+
+nlp_time = time.time() - start_time
 
 res = solver(x0 = ca.vcat(x0),
     lbg = ca.vcat(lbg),
@@ -168,3 +173,6 @@ res = solver(x0 = ca.vcat(x0),
     ubx = ca.vcat(ubx),
     # p = ca.vcat(p_val)
 )
+
+print(f'Time to construct NLP: {nlp_time:.3f}')
+print(f'Total time: {(time.time() - start_time):.3f}')
