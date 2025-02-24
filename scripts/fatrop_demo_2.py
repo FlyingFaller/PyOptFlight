@@ -99,7 +99,7 @@ for k in range(N):
     equality += [True]*nx # added equality constraint for gap closing 
     
     # each time is force equal to eachother by similar gap closing means 
-    G.append(T[k+1]-T[k]) # MUST BE IN FORM X[i+1] = F(X[i]) !!!
+    G.append(T[k+1]-T[k]) # MUST BE IN FORM X[i+1] - F(X[i]) !!!
     lbg.append(0)
     ubg.append(0)
     equality += [True]
