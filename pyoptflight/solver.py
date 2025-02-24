@@ -469,6 +469,8 @@ class Solver(AutoRepr):
         fatrop_opts = {
             'expand': True,
             'fatrop': {"mu_init": 0.1},
+            'ipopt.tol': 1e-4, 
+            'ipopt.max_iter': 250,
             'structure_detection': 'auto',
             'debug': True,
             'equality': equality
