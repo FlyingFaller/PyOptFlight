@@ -157,9 +157,12 @@ options["debug"] = False
 options["equality"] = equality
 
 # (codegen of helper functions)
-# options["jit"] = True
+options["jit"] = True
 # options["jit_temp_suffix"] = False
-# options["jit_options"] = {"flags": ["-O3"],"compiler": "ccache gcc"}
+options['compiler'] = 'shell'
+options["jit_options"] = {"flags": ["-O3", "-Ofast", "-march=native"],
+                        #   "compiler": "wsl gcc",
+                          "verbose": True}
 
 solver = ca.nlpsol('solver', "fatrop", nlp, options)
 # solver = ca.nlpsol('solver', 'ipopt', nlp, {'expand': True})
