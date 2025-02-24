@@ -351,7 +351,7 @@ class Solver(AutoRepr):
                 ### BUILD G ###
                 for i in range(0, self.N[k]): # Only grab first N u's we disregard the N+1 u
                     x_next = I(x0=X[k][i], p=ca.vertcat(U[k][i], T_arr[k][i]))
-                    G.append(x_next['xf'] - X[k][i+1]) # Gap closing on x
+                    G.append(X[k][i+1] - x_next['xf']) # Gap closing on x
                     G.append(T_arr[k][i+1] - T_arr[k][i]) # Gap closing on T
                     lbg += (nx+1)*[0]
                     ubg += (nx+1)*[0]
@@ -370,7 +370,7 @@ class Solver(AutoRepr):
                     k3 = odef(X[k][i] + dt/2 * k2, U[k][i])
                     k4 = odef(X[k][i] + dt * k3, U[k][i])
                     x_next = X[k][i] + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
-                    G.append(x_next - X[k][i+1]) # Gap closing on x TODO:FIXME: MUST BE IN FORM X[i+1] = F(X[i]) !!!
+                    G.append(X[k][i+1] - x_next) # Gap closing on x TODO:FIXME: MUST BE IN FORM X[i+1] - F(X[i]) !!!
                     G.append(T_arr[k][i+1] - T_arr[k][i]) # Gap closing on T
                     lbg += (nx+1)*[0]
                     ubg += (nx+1)*[0]
@@ -532,6 +532,153 @@ class Solver(AutoRepr):
         self.lam_x = result['lam_x']
         self.G = G
         self.V = V
+
+    def fatrop_solve(self) -> None:
+        """Solver built to test fatrop solving specifically"""
+        """Single stage only for now."""
+        start_time = time.time()
+        N = self.N[0]
+        stage = self.stages[0]
+
+        x = ca.SX.sym('[m, r, theta, phi, vr, omega, psi]', 7, 1)
+        m, r, theta, phi, vr, omega, psi = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
+        u = ca.SX.sym('[f, gamma, beta]', 3, 1)
+        f, gamma, beta = u[0], u[1], u[2]
+
+        nx = x.size1() # Number of states (7)
+        nu = u.size1() # number of control vars (3)
+
+        # Decision variables V has arangment [x, t, u, x, t, u, x, t, u, x, t...]
+        V = ca.MX.sym('V', (N+1)*nx + (N+1)*1 + N*nu)
+        X = [V[(nx+nu+1)*i : (nx+nu+1)*(i+1) - nu - 1] for i in range(N+1)]
+        U = [V[(nx+nu+1)*i + nx + 1 : (nx+nu+1)*(i+1)] for i in range(N)]
+        T = [V[(nx+nu+1)*i + nx] for i in range(N+1)]
+
+        # Bounds from boundary points
+        xb_0 = self.x0.get_xb(X[0], self)
+        gb_0 = self.x0.get_gb(X[0], self)
+        xb_f = self.xf.get_xb(X[-1], self)
+        gb_f = self.xf.get_gb(X[-1], self)
+
+        # EOMS
+        v_theta = r*omega
+        v_phi = r*psi*ca.sin(theta)
+        rho = self.body.atm.rho_0*ca.exp(-(r - self.body.atm.rho_0)/self.body.atm.H)
+        g = self.body.g_0*(self.body.r_0/r)**2
+        v_phi_rel = v_phi - r*self.body.psi*ca.sin(theta)
+        v_norm = ca.sqrt(vr**2 + v_theta**2 + v_phi_rel**2)
+        F_drag = 0.5*rho*stage.aero.A_ref*stage.aero.C_D*v_norm/m 
+        F_thrust = stage.prop.F_SL*f
+        a_r = -g + F_thrust/m*ca.cos(beta) - F_drag*vr
+        a_theta = -F_thrust/m*ca.sin(gamma)*ca.sin(beta) - F_drag*v_theta
+        a_phi = F_thrust/m*ca.sin(beta)*ca.cos(gamma) - F_drag*v_phi_rel
+
+        ### ODE RHS ###
+        m_dot = -F_thrust/(stage.prop.Isp_SL*9.81e-3)
+        r_dot = vr
+        theta_dot = omega
+        phi_dot = psi
+        vr_dot = a_r + r*omega**2 + r*psi**2*ca.sin(theta)**2
+        omega_dot = (a_theta - 2*vr*omega + r*psi**2*ca.sin(theta)*ca.cos(theta))/r
+        psi_dot = (a_phi - 2*vr*psi*ca.sin(theta) - 2*r*omega*psi*ca.cos(theta))/(r*ca.sin(theta))
+
+        ### ODE FUNCTION AND INTEGRATOR ###
+        ode = ca.vertcat(m_dot, r_dot, theta_dot, phi_dot, vr_dot, omega_dot, psi_dot)
+        odef = ca.Function('f', [x, u], [ode])
+        dt = ca.SX.sym("dt")
+        int_dict = {'x': x, 'u': u, 'p': dt, 'ode': ode*dt}
+        intg = ca.integrator('intg', 'rk',
+                            int_dict, 0, 1,
+                            {"simplify":True, "number_of_finite_elements": 4})
+
+        ### GAP CLOSING ###
+        G = []
+        lbg = []
+        ubg = []
+        equality = []
+        for i in range(0, N):
+            dt = T[i]/N
+            k1 = odef(X[i], U[i])
+            k2 = odef(X[i] + dt/2 * k1, U[i])
+            k3 = odef(X[i] + dt/2 * k2, U[i])
+            k4 = odef(X[i] + dt * k3, U[i])
+            x_next = X[i] + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+            # G.append(X[i+1] - intg(x0=X[i], u=U[i], p=T[i]/N)['xf']) # Gap closing on x TODO:FIXME: MUST BE IN FORM X[i+1] - F(X[i]) !!!
+            G.append(X[i+1] - x_next)
+            lbg += nx*[0]
+            ubg += nx*[0]
+            equality += [True]*nx
+
+            G.append(T[i+1] - T[i]) # Gap closing on T
+            lbg.append(0)
+            ubg.append(0)
+            equality += [True]
+
+        # Add constraints associated with boundary points if any, fatrop might expect gap closing first
+        # Create constraint lists
+        G += gb_0['g'] + gb_f['g']
+        lbg += gb_0['lbg'] + gb_f['lbg']
+        ubg += gb_0['ubg'] + gb_f['ubg']
+        for (ub, lb) in zip(gb_0['lbg'] + gb_f['lbg'], gb_0['ubg'] + gb_f['ubg']):
+            if ub == lb:
+                equality.append(True)
+            else:
+                equality.append(False)
+
+        ### CONSTRUCT BOUNDS ON STATE ###
+        x0 = []
+        lbx = []
+        ubx = []
+        lbx_free = [self.body.r_0, 0.0, -ca.pi, -ca.inf, -ca.inf, -ca.inf]
+        ubx_free = [ca.inf, ca.pi, ca.pi, ca.inf, ca.inf, ca.inf]
+        m_0 = stage.m_0
+        m_f = stage.m_f
+        sol = self.sols[-1][0]
+        T_min = self.T_min[0]
+        T_max = self.T_max[0]
+        T_init = self.T_init[0]
+        lbx_u = [0.0, -ca.pi, 0.0]
+        ubx_u = [1.0, ca.pi,  ca.pi]
+
+        for i in range(0, N+1):
+            x0 += sol.X[i]
+            x0 += [T_init]
+            if i == 0:
+                x0 += sol.U[i]
+                lbx += [m_0, *xb_0['lbx']] + [T_min] + lbx_u
+                ubx += [m_0, *xb_0['ubx']] + [T_max] + ubx_u
+            elif i == N:
+                lbx += [m_f, *xb_f['lbx']] + [T_min]
+                ubx += [m_0, *xb_f['ubx']] + [T_max]
+            else:
+                x0 += sol.U[i]
+                lbx += [m_f, *lbx_free] + [T_min] + lbx_u
+                ubx += [m_0, *ubx_free] + [T_max] + ubx_u
+            
+        print(f'End of constructor loop time: {time.time()-start_time}')
+
+        ### CONSTRUCT OPTIMIZATION FUNCTION ###
+        opt_func = (m_0 - X[-1][0])/(m_0 - m_f)
+
+        ### SOLVE ###
+        ### TODO: Proper handling of verbosity
+        nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
+
+        fatrop_opts = {
+            'expand': True,
+            'fatrop': {"mu_init": 0.1},
+            'structure_detection': 'auto',
+            'debug': True,
+            'equality': equality
+        }
+        nlpsolver = ca.nlpsol(
+            'nlpsolver', 'fatrop', nlp, fatrop_opts
+        )
+
+        print(f'Construction of NLP: {time.time()-start_time}')
+
+        ### ADD SOLUTION TO SOLUTION SET ###
+        result = nlpsolver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
 
                 
