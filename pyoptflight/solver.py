@@ -383,19 +383,8 @@ class Solver(AutoRepr):
         }
         opts.update(self.extra_opts)
 
-        # nlpsolver = ca.nlpsol(
-        #     'nlpsolver', 'ipopt', nlp, opts
-        # )
-
-        fatrop_opts = {
-            'expand': True,
-            'fatrop': {"mu_init": 0.1},
-            'structure_detection': 'auto',
-            'debug': True,
-            'equality': len(lbg)*[True]
-        }
         nlpsolver = ca.nlpsol(
-            'nlpsolver', 'fatrop', nlp, fatrop_opts
+            'nlpsolver', 'ipopt', nlp, opts
         )
 
         print(f'Construction of NLP: {time.time()-start_time}')
