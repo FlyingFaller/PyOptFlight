@@ -53,7 +53,7 @@ equality = [] # Boolean indicator helping structure detection
 p = [] # Parameters
 p_val = [] # Parameter values
 
-N = 50
+N = 200
 T0 = 10
 
 X = [] # all states (symbolic)
@@ -158,11 +158,14 @@ options["equality"] = equality
 
 # (codegen of helper functions)
 options["jit"] = True
-# options["jit_temp_suffix"] = False
-# options['compiler'] = "C:\\tools\\wsl_gcc.bat"
-options["jit_options"] = {"flags": ["-O3", "-Ofast", "-march=native"],
+options["jit_temp_suffix"] = True
+# options['compiler'] = "gcc"
+options["jit_options"] = {
+                          "flags": [],
+                        #   "flags": ["-Ofast", "-march=native"],
                           "compiler": "gcc",
-                          "verbose": True}
+                          "verbose": True
+                          }
 
 solver = ca.nlpsol('solver', "fatrop", nlp, options)
 # solver = ca.nlpsol('solver', 'ipopt', nlp, {'expand': True})
@@ -177,5 +180,8 @@ res = solver(x0 = ca.vcat(x0),
     # p = ca.vcat(p_val)
 )
 
-print(f'Time to construct NLP: {nlp_time:.3f}')
-print(f'Total time: {(time.time() - start_time):.3f}')
+total_time = time.time() - start_time
+
+print(f'Time to construct NLP: {nlp_time:.3f} sec')
+print(f'Solve time: {(total_time-nlp_time):.3f} sec')
+print(f'Total time: {total_time:.3f} sec')
