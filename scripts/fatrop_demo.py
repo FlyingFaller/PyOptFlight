@@ -159,9 +159,9 @@ options["equality"] = equality
 # (codegen of helper functions)
 options["jit"] = True
 # options["jit_temp_suffix"] = False
-options['compiler'] = 'shell'
+# options['compiler'] = "C:\\tools\\wsl_gcc.bat"
 options["jit_options"] = {"flags": ["-O3", "-Ofast", "-march=native"],
-                        #   "compiler": "wsl gcc",
+                          "compiler": "gcc",
                           "verbose": True}
 
 solver = ca.nlpsol('solver', "fatrop", nlp, options)
