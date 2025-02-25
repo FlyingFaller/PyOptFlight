@@ -2,14 +2,21 @@ print('\nRunning demo!\n')
 
 import time as time
 import casadi as ca
+import subprocess
 
 start_time = time.time()
 
-pos = ca.MX.sym('pos',2) # position
-theta = ca.MX.sym('theta') # angle
+# pos = ca.MX.sym('pos',2) # position
+# theta = ca.MX.sym('theta') # angle
 
-delta = ca.MX.sym('delta') # rate of change of angle or equivalent
-V     = ca.MX.sym('V') # velocity
+# delta = ca.MX.sym('delta') # rate of change of angle or equivalent
+# V     = ca.MX.sym('V') # velocity
+
+pos = ca.SX.sym('pos',2) # position
+theta = ca.SX.sym('theta') # angle
+
+delta = ca.SX.sym('delta') # rate of change of angle or equivalent
+V     = ca.SX.sym('V') # velocity
 
 # States
 x = ca.vertcat(pos,theta) # x = symbolic states
@@ -26,7 +33,8 @@ L = 1 # L? Length of bike
 ode = ca.vertcat(V*ca.vertcat(ca.cos(theta), ca.sin(theta)), V/L*ca.tan(delta)) # ODE
 
 # Discretize system
-dt = ca.MX.sym("dt")
+# dt = ca.MX.sym("dt")
+dt = ca.SX.sym("dt")
 sys = {}
 sys["x"] = x
 sys["u"] = u
@@ -37,7 +45,7 @@ sys["ode"] = ode*dt # Time scaling
 intg = ca.integrator('intg','rk',sys,0,1,{"simplify":True, "number_of_finite_elements": 4})
 
 # create a function that runs the integrator when x, u, dt are supplied returning xnext
-F = ca.Function('F',[x,u,dt],[intg(x0=x,u=u,p=dt)["xf"]],["x","u","dt"],["xnext"])
+F = ca.Function('F', [x,u,dt], [intg(x0=x,u=u,p=dt)["xf"]])
 
 # Number of states and controls (3, 2)
 nx = x.numel()
@@ -53,7 +61,7 @@ equality = [] # Boolean indicator helping structure detection
 p = [] # Parameters
 p_val = [] # Parameter values
 
-N = 200
+N = 1000
 T0 = 10
 
 X = [] # all states (symbolic)
@@ -90,16 +98,9 @@ for k in range(N+1):
         lbx.append(-ca.pi/6);ubx.append(ca.pi/6) # -pi/6 <= delta<= pi/6
         lbx.append(0);ubx.append(1) # 0 <= V<=1
 
-# could everything above be done is like 6 lines and be more readable? yes. Is this approach better? no....wait a minute.
-
 # Round obstacle
 pos0 = ca.vertcat(0.2,5)
 r0 = 1
-
-# setting the initial position looks like
-# X0 = ca.MX.sym("X0",nx)
-# p.append(X0)
-# p_val.append(ca.vertcat(0,0,pi/2))
 
 f = sum(T) # Time Optimal objective
 for k in range(N):
@@ -113,33 +114,12 @@ for k in range(N):
     g.append(T[k+1]-T[k])
     lbg.append(0);ubg.append(0)
     equality += [True]
-    
-    # weird additional constraint on initial pos. Why not just put this in lbx/ubx?
-    # if k==0:
-    #     # Initial constraints
-    #     g.append(X[0]-X0)
-    #     lbg.append(ca.DM.zeros(nx,1))
-    #     ubg.append(ca.DM.zeros(nx,1))
-    #     equality += [True]*nx
-        
+
     # Obstacle avoidance
     pos = X[k][:2]
     g.append(ca.sumsqr(pos-pos0))
     lbg.append(r0**2);ubg.append(ca.inf)
     equality += [False]
-    
-    # same as initial pos constraint, does the order matter here that means they must be in the loop? experiment with this
-    # if k==N-1:
-    #     # Final constraints
-    #     g.append(X[-1][:2])
-    #     lbg.append(ca.vertcat(0,10));ubg.append(ca.vertcat(0,10))
-    #     equality += [True,True]
-
-print(X[0][0])
-
-# Add some regularization
-# for k in range(N+1):
-    # f += X[k][0]**2
 
 # Solve the problem
 
@@ -150,25 +130,47 @@ nlp["x"] = ca.vcat(x)
 # nlp["p"] = ca.vcat(p)
 
 options = {}
-options["expand"] = True
+options["expand"] = True # may help to turn off for code gen
 options["fatrop"] = {"mu_init": 0.1}
 options["structure_detection"] = "auto"
 options["debug"] = False
 options["equality"] = equality
 
 # (codegen of helper functions)
-options["jit"] = True
-options["jit_temp_suffix"] = True
-# options['compiler'] = "gcc"
-options["jit_options"] = {
-                          "flags": [],
-                        #   "flags": ["-Ofast", "-march=native"],
-                          "compiler": "gcc",
-                          "verbose": True
-                          }
+# options["jit"] = True
+# options["jit_temp_suffix"] = True
+# options['compiler'] = "shell"
+# options["jit_options"] = {
+#                           "flags": ["-v"],
+#                         #   "flags": ["-Ofast", "-march=native"], # Adding more agressive optimization routines can massively increase compile mem/time 
+#                           "compiler": "gcc",
+#                           "verbose": True
+#                           }
 
 solver = ca.nlpsol('solver', "fatrop", nlp, options)
 # solver = ca.nlpsol('solver', 'ipopt', nlp, {'expand': True})
+
+# Code gen in external (could be usefull to have the c/so files on hand for later, more or less the same as the JIT option with more permenant files)
+# solver.generate_dependencies("nlp.c")
+# cmd_args = ["gcc","-fPIC","-shared"]+["-v"]+["nlp.c","-o","nlp.so"]
+
+# process = subprocess.Popen(
+#     cmd_args,
+#     stdout=subprocess.PIPE,
+#     stderr=subprocess.STDOUT,  # merge stderr into stdout
+#     text=True,                 # decode bytes to str (Python 3.7+)
+#     bufsize=1                  # line-buffered
+# )
+
+# for line in process.stdout:
+#     print(line, end="")  # Already includes newline
+
+# # Wait for the process to finish
+# process.wait()
+
+# # subprocess.run(cmd_args)
+# solver = ca.nlpsol("solver", "fatrop", "./nlp.so")
+
 
 nlp_time = time.time() - start_time
 
