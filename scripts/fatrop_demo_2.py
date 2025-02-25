@@ -1,6 +1,10 @@
 print('\nRunning demo!\n')
 
 import casadi as ca
+import time as time
+import subprocess
+
+start_time = time.time()
 
 x = ca.SX.sym('[px, py, theta]', 3, 1)
 u = ca.SX.sym('[delta, vel]', 2, 1)
@@ -48,7 +52,7 @@ lbg = []
 ubg = [] # Constraint bounds
 equality = [] # Boolean indicator helping structure detection
 
-N = 20
+N = 50
 T0 = 10
 
 V = ca.MX.sym('V', (N+1)*nx + (N+1)*1 + N*nu)
@@ -59,6 +63,22 @@ T = [V[(nx+nu+1)*i + nx] for i in range(N+1)]
 # nu = 2
 #  0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15
 # [x1, x2, x3, t1, u1, u2, x1, x2, x3, t1, u1, u2, x1, x2, x3, t1]
+
+# Try mapping
+# F_intg = ca.Function('F_int', [x, u, dt], [intg(x0=x, u=u, p=dt)['xf']])
+# intg_map = F_intg.map(N)
+# x0_cat = ca.horzcat(*X[:-1])
+# u_cat  = ca.horzcat(*U)
+# p_cat  = ca.horzcat(*[t/N for t in T[:-1]])
+
+
+# map_res = intg_map(x0_cat, u_cat, p_cat)
+# g_gap = ca.horzcat(*X[1 : ]) - map_res
+# # print(g_gap.shape)
+# # print(ca.vcat(g_gap).shape)
+# G.append(g_gap)
+
+# print(G)
 
 for k in range(N+1):
     x0 += [0, k*T0/N, ca.pi/2]
@@ -82,8 +102,6 @@ for k in range(N+1):
         x0 += [0, 1]
         lbx += [-ca.pi/6, 0]
         ubx += [ca.pi/6, 1]
-
-# could everything above be done is like 6 lines and be more readable? yes. Is this approach better? no....wait a minute.
 
 # Round obstacle
 pos0 = ca.vertcat(0.2, 5)
@@ -111,19 +129,63 @@ for k in range(N):
     ubg.append(ca.inf)
     equality += [False]
 
+### DETERMINES HOW THE PROBLEM IS SOLVED ###
+settings = {
+    'expand': True,
+    'code_gen': 'None',
+    'flags': [],
+    'solver': 'fatrop'
+}
+
 # Solve the problem
+jit_opts = {'jit': settings['code_gen'] == 'jit',
+            'compiler': 'shell',
+            'jit_options': {
+                'flags': ['-v'] + settings['flags'],
+                'compiler': 'gcc',
+                'verbose': True
+            }}
 
 fatrop_opts = {
-    'expand': True,
+    'expand': settings['expand'],
     'fatrop': {"mu_init": 0.1},
     'structure_detection': 'auto',
     'debug': True,
     'equality': equality
 }
 
+ipopt_opts = {'expand': settings['expand']}
+
+options = ({'ipopt': ipopt_opts, 'fatrop': fatrop_opts}[settings['solver']]) | jit_opts
+
 opt_func = T[-1]
 nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
-solver = ca.nlpsol('solver',"fatrop", nlp, fatrop_opts)
+
+solver = ca.nlpsol('solver', settings['solver'], nlp, options)
+
+if settings['code_gen'] == 'generate':
+    solver.generate_dependencies("nlp.c")
+    cmd_args = ["gcc","-fPIC","-shared"]+["-v"]+settings['flags']+["nlp.c","-o","nlp.so"]
+
+    process = subprocess.Popen(
+        cmd_args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # merge stderr into stdout
+        text=True,                 # decode bytes to str (Python 3.7+)
+        bufsize=1                  # line-buffered
+    )
+
+    for line in process.stdout:
+        print(line, end="")  # Already includes newline
+
+    # Wait for the process to finish
+    process.wait()
+
+    # subprocess.run(cmd_args)
+    solver = ca.nlpsol("solver", settings['solver'], "./nlp.so")
+
+
+nlp_time = time.time() - start_time
 
 res = solver(x0 = x0,
     lbg = lbg,
@@ -131,3 +193,18 @@ res = solver(x0 = x0,
     lbx = lbx,
     ubx = ubx,
 )
+
+total_time = time.time() - start_time
+
+width = len(str(settings))
+
+print((width+3)*'=')
+print(f'N points: {N:<{width-10}} ||')
+print(f'N iters: {solver.stats()["iter_count"]:<{width-9}} ||')
+print((width+3)*'=')
+print(settings, '||')
+print((width+3)*'=')
+print(f'Time to construct NLP: {nlp_time:<{width-27}.3f} sec ||')
+print(f'Solve time: {(total_time-nlp_time):<{width-16}.3f} sec ||')
+print(f'Total time: {total_time:<{width-16}.3f} sec ||')
+print((width+3)*'=')
