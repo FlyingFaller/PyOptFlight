@@ -1,5 +1,5 @@
 import casadi as ca
-import pylab as plt
+import matplotlib.pyplot as plt
 
 dir = './'
 
