@@ -688,10 +688,103 @@ class Solver(AutoRepr):
         ### ADD SOLUTION TO SOLUTION SET ###
         result = nlpsolver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
+    def create_nlp(self) -> None:
+        # NLP requires V, opt_func, G, equality
+        start_time = time.time()
+        x = ca.SX.sym('[m, r, theta, phi, vr, omega, psi]', 7, 1)
+        m, r, theta, phi, vr, omega, psi = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
+        u = ca.SX.sym('[f, gamma, beta]', 3, 1)
+        f, gamma, beta = u[0], u[1], u[2]
 
-                
+        nx = x.size1() # Number of states (7)
+        nu = u.size1() # number of control vars (3)
 
+        V = []
+        X = []
+        U = []
+        T = []
+        G = []
+        E = []
+        for k in range(self.nstages):
+            N = self.N[k]
+             # Decision vars for this stage
+            Vk = ca.MX.sym('V', (N+1)*nx + (N+1)*1 + N*nu)
+            Xk = [V[(nx+nu+1)*i : (nx+nu+1)*(i+1) - nu - 1] for i in range(N+1)]
+            Uk = [V[(nx+nu+1)*i + nx + 1 : (nx+nu+1)*(i+1)] for i in range(N)]
+            Tk = [V[(nx+nu+1)*i + nx] for i in range(N+1)]
+            V.append(Vk)
+            X.append(Xk)
+            U.append(Uk)
+            T.append(Tk)
 
+        for k, stage in enumerate(self.stages):
+            ### EOMS ###
+            v_theta = r*omega
+            v_phi = r*psi*ca.sin(theta)
+            rho = self.body.atm.rho_0*ca.exp(-(r - self.body.atm.rho_0)/self.body.atm.H)
+            g = self.body.g_0*(self.body.r_0/r)**2
+            v_phi_rel = v_phi - r*self.body.psi*ca.sin(theta)
+            v_norm = ca.sqrt(vr**2 + v_theta**2 + v_phi_rel**2)
+            F_drag = 0.5*rho*stage.aero.A_ref*stage.aero.C_D*v_norm/m 
+            F_thrust = stage.prop.F_SL*f
+            a_r = -g + F_thrust/m*ca.cos(beta) - F_drag*vr
+            a_theta = -F_thrust/m*ca.sin(gamma)*ca.sin(beta) - F_drag*v_theta
+            a_phi = F_thrust/m*ca.sin(beta)*ca.cos(gamma) - F_drag*v_phi_rel
 
+            ### ODE RHS ###
+            m_dot = -F_thrust/(stage.prop.Isp_SL*9.81e-3)
+            r_dot = vr
+            theta_dot = omega
+            phi_dot = psi
+            vr_dot = a_r + r*omega**2 + r*psi**2*ca.sin(theta)**2
+            omega_dot = (a_theta - 2*vr*omega + r*psi**2*ca.sin(theta)*ca.cos(theta))/r
+            psi_dot = (a_phi - 2*vr*psi*ca.sin(theta) - 2*r*omega*psi*ca.cos(theta))/(r*ca.sin(theta))
 
+            ### ODE FUNC AND INTEGRATOR ###
+            ode = ca.vertcat(m_dot, r_dot, theta_dot, phi_dot, vr_dot, omega_dot, psi_dot)
+            F_ode = ca.Function('F_ode', [x, u], [ode])
+            # All integrators need x, u, dt (symbolics) and should return x_next
+            dt = ca.SX.sym("dt")
+            if True: # Implement more int methods later RK4
+                k1 = F_ode(x, u)
+                k2 = F_ode(x + dt/2 * k1, u)
+                k3 = F_ode(x + dt/2 * k2, u)
+                k4 = F_ode(x + dt * k3, u)
+                x_next = x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+                F_int = ca.Function('F_int', [x, u, dt], [x_next])
 
+            N = self.N[k]
+            for i in range(N):
+                # Do gap closing ig?
+                G.append(X[k][i+1] - F_int(X[k][i], U[k][i], T[k][i]/N))
+                G.append(T[k][i+1] - T[k][i])
+                E += (nx + 1)*[True]
+
+            if k+1 < self.nstages:
+                # Continuity between stages
+                G.append(X[k+1][0][1:] - X[k][-1][1:])
+                E += (nx - 1)*[True]
+
+        gb_0 = self.x0.get_gb(X[0], self)
+        gb_f = self.xf.get_gb(X[-1], self)
+        G += gb_0['g'] + gb_f['g']
+        for (ub, lb) in zip(gb_0['lbg'] + gb_f['lbg'], gb_0['ubg'] + gb_f['ubg']):
+            if ub == lb:
+                E.append(True)
+            else:
+                E.append(False)
+            
+        opt_func = (self.stages[-1].m_0 - X[-1][-1][0])/(self.stages[-1].m_0 - self.stages[-1].m_f)
+
+        nlp = {'x': ca.vertcat(*G), 'f': opt_func, 'g': ca.vertcat(*G)}
+        fatrop_opts = {
+            'expand': True,
+            'fatrop': {"mu_init": 0.1},
+            'structure_detection': 'auto',
+            'debug': True,
+            'equality': E
+        }
+        nlpsolver = ca.nlpsol(
+            'nlpsolver', 'fatrop', nlp, fatrop_opts
+        )
+        print(f'Construction of NLP: {time.time()-start_time}')
