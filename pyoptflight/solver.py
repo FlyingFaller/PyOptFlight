@@ -691,12 +691,12 @@ class Solver(AutoRepr):
     def create_nlp(self) -> None:
         # NLP requires V, opt_func, G, equality
         start_time = time.time()
-        x = ca.SX.sym('[m, r, theta, phi, vr, omega, psi]', 7, 1)
-        m, r, theta, phi, vr, omega, psi = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
-        u = ca.SX.sym('[f, gamma, beta]', 3, 1)
-        f, gamma, beta = u[0], u[1], u[2]
+        x = ca.SX.sym('[m, r, theta, phi, vr, omega, psi, f, gamma, beta]', 10, 1)
+        m, r, theta, phi, vr, omega, psi, f, gamma, beta = x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9]
+        u = ca.SX.sym('[df, dgamma, dbeta]', 3, 1)
+        df, dgamma, dbeta = u[0], u[1], u[2]
 
-        nx = x.size1() # Number of states (7)
+        nx = x.size1() # Number of states (10)
         nu = u.size1() # number of control vars (3)
 
         V = []
@@ -709,14 +709,14 @@ class Solver(AutoRepr):
             N = self.N[k]
              # Decision vars for this stage
             Vk = ca.MX.sym('V', (N+1)*nx + (N+1)*1 + N*nu)
-            Xk = [V[(nx+nu+1)*i : (nx+nu+1)*(i+1) - nu - 1] for i in range(N+1)]
-            Uk = [V[(nx+nu+1)*i + nx + 1 : (nx+nu+1)*(i+1)] for i in range(N)]
-            Tk = [V[(nx+nu+1)*i + nx] for i in range(N+1)]
+            Uk = [Vk[(nx+nu+1)*i + nx + 1 : (nx+nu+1)*(i+1)] for i in range(N)]
+            Xk = [Vk[(nx+nu+1)*i : (nx+nu+1)*(i+1) - nu - 1] for i in range(N+1)]
+            Tk = [Vk[(nx+nu+1)*i + nx] for i in range(N+1)]
             V.append(Vk)
             X.append(Xk)
             U.append(Uk)
             T.append(Tk)
-
+            
         for k, stage in enumerate(self.stages):
             ### EOMS ###
             v_theta = r*omega
@@ -741,7 +741,7 @@ class Solver(AutoRepr):
             psi_dot = (a_phi - 2*vr*psi*ca.sin(theta) - 2*r*omega*psi*ca.cos(theta))/(r*ca.sin(theta))
 
             ### ODE FUNC AND INTEGRATOR ###
-            ode = ca.vertcat(m_dot, r_dot, theta_dot, phi_dot, vr_dot, omega_dot, psi_dot)
+            ode = ca.vertcat(m_dot, r_dot, theta_dot, phi_dot, vr_dot, omega_dot, psi_dot, df, dgamma, dbeta)
             F_ode = ca.Function('F_ode', [x, u], [ode])
             # All integrators need x, u, dt (symbolics) and should return x_next
             dt = ca.SX.sym("dt")
@@ -760,23 +760,38 @@ class Solver(AutoRepr):
                 G.append(T[k][i+1] - T[k][i])
                 E += (nx + 1)*[True]
 
+                if i == 0 and k == 0: # Has to be here to give fatrop correct C, D matrix structure
+                    # Add in initial constraints
+                    gb_0 = self.x0.get_gb(X[0][0], self)
+                    G += gb_0['g']
+                    for (ub, lb) in zip(gb_0['lbg'], gb_0['ubg']):
+                        if ub == lb:
+                            E.append(True)
+                        else:
+                            E.append(False)
+
             if k+1 < self.nstages:
                 # Continuity between stages
-                G.append(X[k+1][0][1:] - X[k][-1][1:])
-                E += (nx - 1)*[True]
+                G.append(X[k+1][0][0] - X[k][-1][0] - (self.stages[k+1].m_0 - self.stages[k].m_f)) # mass
+                G.append(X[k+1][0][1:7] - X[k][-1][1:7]) # pos/vel
+                G.append(X[k+1][0][7:10] - X[k][-1][7:10]) # f/yaw/pitch #TODO: Ensure f==0 at stage interface
+                E += (nx)*[True]
 
-        gb_0 = self.x0.get_gb(X[0], self)
-        gb_f = self.xf.get_gb(X[-1], self)
-        G += gb_0['g'] + gb_f['g']
-        for (ub, lb) in zip(gb_0['lbg'] + gb_f['lbg'], gb_0['ubg'] + gb_f['ubg']):
+
+        # Add in final constraints
+        gb_f = self.xf.get_gb(X[-1][-1], self)
+        G += gb_f['g']
+        for (ub, lb) in zip(gb_f['lbg'], gb_f['ubg']):
             if ub == lb:
                 E.append(True)
             else:
                 E.append(False)
             
+        # Optimization function
         opt_func = (self.stages[-1].m_0 - X[-1][-1][0])/(self.stages[-1].m_0 - self.stages[-1].m_f)
 
-        nlp = {'x': ca.vertcat(*G), 'f': opt_func, 'g': ca.vertcat(*G)}
+        # Create solver
+        nlp = {'x': ca.vertcat(*V), 'f': opt_func, 'g': ca.vertcat(*G)}
         fatrop_opts = {
             'expand': True,
             'fatrop': {"mu_init": 0.1},
@@ -788,3 +803,29 @@ class Solver(AutoRepr):
             'nlpsolver', 'fatrop', nlp, fatrop_opts
         )
         print(f'Construction of NLP: {time.time()-start_time}')
+
+
+# TODO: THINGS NEEDING REWRITE:
+# boundary_objects.py:
+#   * All objs should have (optional) arguments for fixing f, gamma, beta
+#   * __init__ and get_xb need updating
+#   * get_x_range should probably only have solver as its only called by solver initalize method
+#
+# initialize.py:
+#   * _fix_states appears ok but only because it calls get_x_range which hasn't been updated
+#   * _linear_methods needs to move seg_velocities to X output and find a way to estimate new U (finite difference?)
+#       ~ change_basis may need updating to handle new U in this func
+#   * gravity_turn  
+#       ~ make f a state and df a control
+#       ~ new initial guess for f (0.5?) and df (0?)
+#       ~ bounds of u are now additional bounds on x
+#       ~ may need bounds on df but try unbounded
+#       ~ everything after 'prepare solutions' needs to be adjusted
+# functions.py:
+#   * change_basis should be succeeded by one which uses rotation matricies 
+#     and has only one input and one output
+#       ~ input can vary in width (3 = pos, 6=pos/vel, 7 = m/pos/vel, ect) maybe 
+#       ~ there could be an mask provided to specifiy if it is a pos/vel/control/ignore
+#   * rotate_trajectory should be change in the same way change_basis was
+# plotting.py
+#   * plot_solution should be adjusted slightly to feed plot_trajectory correct data
