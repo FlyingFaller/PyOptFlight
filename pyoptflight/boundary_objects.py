@@ -5,9 +5,9 @@ from .functions import *
 from .setup import *
 import numpy as np
 
-def offset_states(state, solver: "Solver"):
-    state, _ = rotate_trajectory(state, np.ones((3)), np.array([0, 0, 1]), -solver.config.delta_nu_init)
-    return state
+# def offset_states(state, solver: "Solver"):
+#     state, _ = rotate_trajectory(state, np.ones((3)), np.array([0, 0, 1]), -solver.config.delta_nu_init)
+#     return state
 
 class BoundaryObj(AutoRepr):
     """
@@ -67,13 +67,6 @@ class StateBoundary(AutoRepr):
                 "ubg": [], 
                 "lbg": []}
     
-    # def get_he(self, solver: "Solver"):
-    #     if self.state[2] is None:
-    #         state = self.state.copy()
-    #         state[2] = 0
-    #     _, _, _, _, _, _, h, e = state_to_kep(np.array(state), solver.body.mu)
-    #     return h, e
-        
     def get_x_range(self, config: "SolverConfig", body: "Body", npoints=1000) -> Dict:
         if not self.fully_defined: # If phi is an unknown
             phi_range = np.linspace(self.lbx[2], self.ubx[2], npoints) #np array
@@ -139,9 +132,6 @@ class LatLngBoundary(StateBoundary):
         else: # Enforce strict equality
             self.ubx = self.state.copy()
             self.lbx = self.state.copy()
-
-        # Initialize the base class with the computed state and bounds.
-        # super().__init__(state, ubx, lbx)
 
     def get_gb(self, X, solver: "Solver") -> Dict:
         """
@@ -251,7 +241,7 @@ class KeplerianBoundary(AutoRepr):
         if self.fully_defined:
             return {"g": [], "ubg": [], "lbg": []}
         else:
-            h_curr, e_curr = sym_state_to_he(X[1:], solver.body.mu)
+            h_curr, e_curr = sym_state_to_he(X[1:7], solver.body.mu)
             _, h_T, e_T = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, 0, solver.body.mu)
             tol = solver.config.constraints_tol
             g = []
@@ -265,11 +255,7 @@ class KeplerianBoundary(AutoRepr):
             return {"g": g, 
                     "ubg": ubg,
                     "lbg": lbg}
-    
-    # def get_he(self, solver: "Solver"):
-    #     _, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, 0, solver.body.mu)
-    #     return h, e
-        
+
     def get_x_range(self, config: "SolverConfig", body: "Body", npoints=1000) -> Dict:
         if not self.fully_defined:
             ν_range = np.linspace(-np.pi, np.pi, npoints)
