@@ -721,7 +721,7 @@ class Solver(AutoRepr):
             ### EOMS ###
             v_theta = r*omega
             v_phi = r*psi*ca.sin(theta)
-            rho = self.body.atm.rho_0*ca.exp(-(r - self.body.atm.rho_0)/self.body.atm.H)
+            rho = self.body.atm.rho_0*ca.exp(-(r - self.body.r_0)/self.body.atm.H)
             g = self.body.g_0*(self.body.r_0/r)**2
             v_phi_rel = v_phi - r*self.body.psi*ca.sin(theta)
             v_norm = ca.sqrt(vr**2 + v_theta**2 + v_phi_rel**2)
