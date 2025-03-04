@@ -115,7 +115,7 @@ class LatLngBoundary(StateBoundary):
             phi = config.pmerid_offset + np.deg2rad(lng)
         vr = v_eps
         omega = 0
-        psi = body.psi
+        psi = body.omega_0
 
         self.state = [r, theta, phi, vr, omega, psi]
 
@@ -124,8 +124,8 @@ class LatLngBoundary(StateBoundary):
         self.lbx = self.state.copy()
         if not self.fully_defined or config.landing:
             if config.landing: # Formulate bounds around predicted landing zone
-                self.ubx[2] = config.pmerid_offset + np.deg2rad(lb_lng) + config.T_init*body.psi
-                self.lbx[2] = config.pmerid_offset + np.deg2rad(ub_lng) + config.T_init*body.psi
+                self.ubx[2] = config.pmerid_offset + np.deg2rad(lb_lng) + config.T_init*body.omega_0
+                self.lbx[2] = config.pmerid_offset + np.deg2rad(ub_lng) + config.T_init*body.omega_0
             else: # Formulate bounds around launch zone
                 self.ubx[2] = config.pmerid_offset + np.deg2rad(lb_lng)
                 self.lbx[2] = config.pmerid_offset + np.deg2rad(ub_lng)
@@ -150,7 +150,7 @@ class LatLngBoundary(StateBoundary):
         if solver.config.landing and self.fully_defined:
             target_phi = solver.config.pmerid_offset + np.deg2rad(self.lng)
             # The constraint is defined such that g = 0 when satisfied.
-            g = [X[3] - solver.T * solver.body.psi - target_phi]
+            g = [X[3] - solver.T * solver.body.omega_0 - target_phi]
             tol = solver.config.constraints_tol
             ubg = [tol]
             lbg = [-tol]
@@ -171,7 +171,7 @@ class LatLngBoundary(StateBoundary):
             # For landing mode, generate a guess using a prescribed formula.
             x = self.state.copy()
             # Update phi according to the landing initialization.
-            x[2] = config.T_init * body.psi + config.pmerid_offset + np.deg2rad(self.lng)
+            x[2] = config.T_init * body.omega_0 + config.pmerid_offset + np.deg2rad(self.lng)
             return {"x": np.array([x]), "axis": np.array([0, 0, 1])}
         else:
             return {"x": np.array([self.state]), "axis": np.array([0, 0, 1])}
