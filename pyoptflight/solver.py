@@ -315,7 +315,7 @@ class Solver(AutoRepr):
             v_phi = r*psi*ca.sin(theta)
             rho = self.body.atm.rho_0*ca.exp(-(r - self.body.atm.rho_0)/self.body.atm.H)
             g = self.body.g_0*(self.body.r_0/r)**2
-            v_phi_rel = v_phi - r*self.body.psi*ca.sin(theta)
+            v_phi_rel = v_phi - r*self.body.omega_0*ca.sin(theta)
             v_norm = ca.sqrt(vr**2 + v_theta**2 + v_phi_rel**2)
             F_drag = 0.5*rho*stage.aero.A_ref*stage.aero.C_D*v_norm/m 
             F_thrust = stage.prop.F_SL*f
@@ -565,7 +565,7 @@ class Solver(AutoRepr):
         v_phi = r*psi*ca.sin(theta)
         rho = self.body.atm.rho_0*ca.exp(-(r - self.body.atm.rho_0)/self.body.atm.H)
         g = self.body.g_0*(self.body.r_0/r)**2
-        v_phi_rel = v_phi - r*self.body.psi*ca.sin(theta)
+        v_phi_rel = v_phi - r*self.body.omega_0*ca.sin(theta)
         v_norm = ca.sqrt(vr**2 + v_theta**2 + v_phi_rel**2)
         F_drag = 0.5*rho*stage.aero.A_ref*stage.aero.C_D*v_norm/m 
         F_thrust = stage.prop.F_SL*f
@@ -691,10 +691,10 @@ class Solver(AutoRepr):
     def create_nlp(self) -> None:
         # NLP requires V, opt_func, G, equality
         start_time = time.time()
-        x = ca.SX.sym('[m, r, theta, phi, vr, omega, psi, f, gamma, beta]', 10, 1)
-        m, r, theta, phi, vr, omega, psi, f, gamma, beta = x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9]
-        u = ca.SX.sym('[df, dgamma, dbeta]', 3, 1)
-        df, dgamma, dbeta = u[0], u[1], u[2]
+        x = ca.SX.sym('[m, px, py, pz, vx, vy, vz, f, psi, theta]', 10, 1)
+        m, px, py, pz, vx, vy, vz, f, psi, theta = x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9]
+        u = ca.SX.sym('[tau, r, q]', 3, 1)
+        tau, r, q = u[0], u[1], u[2]
 
         nx = x.size1() # Number of states (10)
         nu = u.size1() # number of control vars (3)
@@ -719,29 +719,44 @@ class Solver(AutoRepr):
             
         for k, stage in enumerate(self.stages):
             ### EOMS ###
-            v_theta = r*omega
-            v_phi = r*psi*ca.sin(theta)
-            rho = self.body.atm.rho_0*ca.exp(-(r - self.body.r_0)/self.body.atm.H)
-            g = self.body.g_0*(self.body.r_0/r)**2
-            v_phi_rel = v_phi - r*self.body.psi*ca.sin(theta)
-            v_norm = ca.sqrt(vr**2 + v_theta**2 + v_phi_rel**2)
-            F_drag = 0.5*rho*stage.aero.A_ref*stage.aero.C_D*v_norm/m 
-            F_thrust = stage.prop.F_SL*f
-            a_r = -g + F_thrust/m*ca.cos(beta) - F_drag*vr
-            a_theta = -F_thrust/m*ca.sin(gamma)*ca.sin(beta) - F_drag*v_theta
-            a_phi = F_thrust/m*ca.sin(beta)*ca.cos(gamma) - F_drag*v_phi_rel
+            # Temp vars before more complete model comes together#
+            f_min = 0
+            K = 100
+            C_A = -stage.aero.C_D
+            C_Ny = stage.aero.C_L
+            C_Nz = stage.aero.C_L
 
-            ### ODE RHS ###
-            m_dot = -F_thrust/(stage.prop.Isp_SL*9.81e-3)
-            r_dot = vr
-            theta_dot = omega
-            phi_dot = psi
-            vr_dot = a_r + r*omega**2 + r*psi**2*ca.sin(theta)**2
-            omega_dot = (a_theta - 2*vr*omega + r*psi**2*ca.sin(theta)*ca.cos(theta))/r
-            psi_dot = (a_phi - 2*vr*psi*ca.sin(theta) - 2*r*omega*psi*ca.cos(theta))/(r*ca.sin(theta))
+            # Supporting Definitions #
+            h = ca.sqrt(px**2 + py**2 + pz**2) - self.body.r_0 # Altitude
+            F_max = stage.prop.F_vac + (stage.prop.F_SL - stage.prop.F_vac)*ca.exp(-h/self.body.atm.H) # Max thrust
+            F_eff = F_max*f/(1 + ca.exp(-K*(f - f_min))) # Effective thrust
+            Isp = stage.prop.Isp_vac + (stage.prop.Isp_SL - stage.prop.Isp_vac)*ca.exp(-h/self.body.atm.H) # Isp
+            g = -self.body.g_0*self.body.r_0**2*(px**2 + py**2 + pz**2)**(-3/2)*ca.vertcat(px, py, pz) # gravity vector
+            rho = self.body.atm.rho_0*ca.exp(-h/self.body.atm.H) # denisty
+            v_rel = ca.vertcat(vx + self.body.omega_0*py, vy - self.body.omega_0*px, vz) # atmosphere relative velocity
+
+            # body fram basis vectors
+            ebx = ca.vertcat(ca.cos(psi)*ca.cos(theta), ca.sin(psi)*ca.cos(theta), -ca.sin(theta))
+            eby = ca.vertcat(-ca.sin(psi), ca.cos(psi), 0)
+            ebz = ca.vertcat(ca.cos(psi)*ca.sin(theta), ca.sin(psi)*ca.sin(theta), ca.cos(theta))
+            
+            m_dot = -F_eff/(Isp*9.81e-3)
+            px_dot = vx
+            py_dot = vy
+            pz_dot = vz
+            vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[0] + C_Ny*eby[0] + C_Nz*ebz[0])
+            vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[1] + C_Ny*eby[1] + C_Nz*ebz[1])
+            vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[2] + C_Ny*eby[2] + C_Nz*ebz[2])
+            # Drag only version if needed in testing
+            # vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[0]
+            # vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[1]
+            # vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[2]
+            f_dot = tau
+            psi_dot = r/ca.cos(theta)
+            theta_dot = q
 
             ### ODE FUNC AND INTEGRATOR ###
-            ode = ca.vertcat(m_dot, r_dot, theta_dot, phi_dot, vr_dot, omega_dot, psi_dot, df, dgamma, dbeta)
+            ode = ca.vertcat(m_dot, px_dot, py_dot, pz_dot, vx_dot, vy_dot, vz_dot, f_dot, psi_dot, theta_dot)
             F_ode = ca.Function('F_ode', [x, u], [ode])
             # All integrators need x, u, dt (symbolics) and should return x_next
             dt = ca.SX.sym("dt")
