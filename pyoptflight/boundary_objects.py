@@ -5,10 +5,6 @@ from .functions import *
 from .setup import *
 import numpy as np
 
-# def offset_states(state, solver: "Solver"):
-#     state, _ = rotate_trajectory(state, np.ones((3)), np.array([0, 0, 1]), -solver.config.delta_nu_init)
-#     return state
-
 class BoundaryObj(AutoRepr):
     """
     Boundary Object Template
@@ -22,6 +18,136 @@ class BoundaryObj(AutoRepr):
     def get_x_range(self, config: "SolverConfig", body: "Body", npoints=1000) -> Dict:
         pass
 
+# we desire a boundary object that has the following features:
+# Lat Lng Boundaries:
+# - Must specify a lat and a lng 
+# - Can specify a time or leave as None
+#   - Leaving time as None results in an unknown position/velocity/attitude
+#   - Maybe specify a celestial angular offset instead? Leaving None implise unknown.
+#   - In modern astronomy we use ERA (Earth Rotation Angle) to specify the orientation 
+#       which can be mapped to times like TAI, UTC, UT1, etc. May be good to use this definition
+#   - Probably best to specify a ERA for T=0 in the Body object for consistency between ascent/landing 
+#   - Ok what we want is to attach ERA_0 to the LatLng obj. This can be None or defined. Also have a ERA_range 
+#       which can be be None or a tuple of (min, max)
+# - May specify an ERA_0: float or None
+# - May specify an ERA_range: tuple(float, float) or None
+# - Must specify an altitude
+# - Must specify a velocity
+# - Need to get out: state bounds, constraints, and constraint bounds for all states except mass
+
+class LatLngBound(BoundaryObj):
+    def __init__(
+        self,
+        lat: float, # Latitude in radians
+        lng: float, # Longitude in radians
+        alt: float, # Altitude in km
+        vel: float, # Velocity in km/s
+        f: None | float = None, # Throttle setting. None lets solver determine.
+        atti: None | str | tuple[float, ...] = 'radial', # Vehicle orientation. None lets solver determine subject to range. Tuple specifies exact (psi, theta). Str 'radial' forces vehicle to be vertical on pad.
+        atti_range: tuple[tuple[float, ...], ...] = ((-np.pi, np.pi), (0, np.pi)), # (min, max) for psi and theta in radians.
+        ERA0: None | float = None, # Earth Rotation Angle at T=0 in radians. None lets solver determine subject to range.
+        ERA0_range: tuple[float, ...] = (0, 2*np.pi), # (min, max) ERA0 in radians. 
+    ) -> None:
+        self.lat = lat
+        self.lng = lng
+        self.alt = alt
+        self.vel = vel
+        self.f = f
+        self.atti = atti
+        self.atti_range = atti_range
+        self.ERA0 = ERA0
+        self.ERA0_range = ERA0_range
+
+
+    def get_x0s(): # For use only in initialization scripts
+        pass
+
+    def get_g():
+        pass
+    
+    def get_gb():
+        pass
+
+    def get_xb(self, X, solver: "Solver") -> Dict:
+        # Need bounds on pos, vel, f, atti
+        # For ascent problems:
+        #   1. If ERA_0 is None then pos and vel and atti can be anything*
+        #   2. If ERA_0 is not None then pos is known and vel/atti can be determined if atti is not None
+        # For landing problems:
+        #   1. If ERA_0 is None then pos and vel and atti can be anything*
+        #   2. If ERA_0 is not None then pos is still unknown but is a function of sum(T_min), sum(T_max), and omega_0
+        # We can compute an effective ERA/ERA_range for each case and generalize the case where ERA_0 is None
+        T_min = sum(solver.T_min)
+        T_max = sum(solver.T_max)
+        omega_0 = solver.body.omega_0
+
+        if solver.config.landing: # landing
+            self.ERA = None
+            if self.ERA0 is not None:
+                self.ERA_range = (self.ERA0 + omega_0*T_min, self.ERA0 + omega_0*T_max)
+            else:
+                self.ERA_range = (self.ERA0_range[0] + omega_0*T_min, self.ERA0_range[1] + omega_0*T_max)
+        else: # ascent
+            self.ERA = self.ERA0
+            self.ERA_range = self.ERA0_range
+
+        r = solver.body.r_0 + self.alt
+        theta = np.pi/2 - np.deg2rad(self.lat)
+        z_min = np.cos(theta)
+        z_max = np.cos(theta)
+        if self.ERA is None:
+            # use ERA_range to find min max x, y, z
+            # Move to dedicated function in functions.py
+            phi_min = self.ERA_range[0] + np.deg2rad(self.lng)
+            phi_max = self.ERA_range[1] + np.deg2rad(self.lng)
+            cos_x_min, cos_x_max = np.cos(phi_min), np.cos(phi_max)
+            sin_x_min, sin_x_max = np.sin(phi_min), np.sin(phi_max)
+            k_min_cos = np.ceil(phi_min / np.pi)
+            k_max_cos = np.floor(phi_max / np.pi)
+            k_min_sin = np.ceil((phi_min - np.pi/2) / np.pi)
+            k_max_sin = np.floor((phi_max - np.pi/2) / np.pi)
+            cos_values = {cos_x_min, cos_x_max}
+            sin_values = {sin_x_min, sin_x_max}
+            for k in range(int(k_min_cos), int(k_max_cos) + 1):
+                if phi_min <= k * np.pi <= phi_max:
+                    cos_values.add((-1) ** k)
+            for k in range(int(k_min_sin), int(k_max_sin) + 1):
+                if phi_min <= (2 * k + 1) * np.pi / 2 <= phi_max:
+                    sin_values.add((-1) ** k)
+            x_min = min(cos_values)*np.sin(theta)
+            x_max = max(cos_values)*np.sin(theta)
+            y_min = min(sin_values)*np.sin(theta)
+            y_max = max(sin_values)*np.sin(theta)
+
+        else:
+            # use ERA to find min max x, y, z
+            phi = self.ERA + np.deg2rad(self.lng)
+            x = np.sin(theta)*np.cos(phi)
+            y = np.sin(theta)*np.sin(phi)
+            x_min, x_max = x, x
+            y_min, y_max = y, y
+
+        px_min, px_max = r*x_min, r*x_max
+        py_min, py_max = r*y_min, r*y_max
+        pz_min, pz_max = r*z_min, r*z_max
+
+        if self.atti is None: # atti is in a range
+            psi_min, psi_max = self.atti_range[0]
+            theta_min, theta_max = self.atti_range[1]
+            # vel will be min max in these angles unclear how to determine
+        elif self.atti == 'radial': # determine from position vector
+            if self.ERA is None:
+                psi_min, psi_max = (phi_min + np.pi) % (2 * np.pi) - np.pi, (phi_max + np.pi) % (2 * np.pi) - np.pi
+                theta_min, theta_max = theta, theta
+                # vell well be min max same as pos
+            pass
+        else: # atti is known tuple
+            psi_min, psi_max = self.atti[0], self.atti[0]
+            psi_min, psi_max = self.atti[1], self.atti[1]
+            # vel is known
+
+        # if ERA is None then use ERA range to find min max px, py, pz. 
+        # We now have an ERA that is either None or a float and an ERA_range for use in the former case
 class StateBoundary(AutoRepr):
     def __init__(self, state, ubx=None, lbx=None) -> None:
         """
