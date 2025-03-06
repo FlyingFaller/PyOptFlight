@@ -59,7 +59,10 @@ class LatLngBound(BoundaryObj):
         self.ERA0 = ERA0
         self.ERA0_range = ERA0_range
 
-    def _optimize_extreme(func, bounds):
+    # TODO: THERE IS A STRONG ARGUMENT TO BE MADE THAT ATTI AND VEL SHOULD ALWAYS BE VERTICAL
+    # What senario would you want your rocket to launch or land at an angle?
+
+    def _optimize_extreme(self, func, bounds):
         """
         Given a scalar function `func(x)` and bounds (list of (min, max) for each parameter),
         returns the (min, max) value over the domain.
@@ -71,13 +74,24 @@ class LatLngBound(BoundaryObj):
         res_max = differential_evolution(lambda x: -func(x), bounds)
         max_val = -res_max.fun
         return min_val, max_val
+    
     def get_x0s(): # For use only in initialization scripts
         pass
 
     def get_g():
+        # If ERA0 is None or Landing then we need to constrain pos to be len r+h (just constraint on x and y)
+        # If ERA0 is not None and Landing then we must ensure x, y = lng @ sum(T)
+        # Similar constraints placed on vel and atti
+        # Constraint on (x**2 + y**2)/(r+h)**2 = cos(lat)**2
+        # Constraint on ca.atan2(y, x) = lng + ERA # caution of ranges here
+        # Assuming vel and atti is vertical
+        # Constraint on (vx**2 + vy**2)/(vel)**2 = cos(lat)**2 ?
+        # Constraint on ca.atan2(vy, vx) = lng + ERA or ca.atan2(-vy, -vx) = lng + ERA depending on landing?
+        # Constraint on (r+h)*[cos(theta)*cos(psi), cos(theta)*sin(psi), -sin(theta)] = [x, y, z] ?
         pass
     
     def get_gb():
+
         pass
 
     def get_xb(self, solver: "Solver") -> Dict:
@@ -122,13 +136,13 @@ class LatLngBound(BoundaryObj):
             dpsi, dtheta, phi = x
             x = np.sin(theta + dtheta)*np.cos(phi + dpsi)
             y = np.sin(theta + dtheta)*np.sin(phi + dpsi)
-            vx = speed*x  + omega_0*y*r
+            vx = speed*x  - omega_0*y*r
             return vx
         def vy_func(x):
             dpsi, dtheta, phi = x
             x = np.sin(theta + dtheta)*np.cos(phi + dpsi)
             y = np.sin(theta + dtheta)*np.sin(phi + dpsi)
-            vy = speed*y - omega_0*x*r
+            vy = speed*y + omega_0*x*r
             return vy
         def vz_func(x):
             dpsi, dtheta, phi = x
@@ -141,8 +155,15 @@ class LatLngBound(BoundaryObj):
         # Determine min max psi, theta
         theta_min = -np.deg2rad(self.lng) + dtheta_min
         theta_max = -np.deg2rad(self.lng) + dtheta_max
-        psi_min = (phi_min + dpsi_min) % (2*np.pi) - np.pi
-        psi_max = (phi_max + dpsi_max) % (2*np.pi) - np.pi
+        
+        # FIXME: May cause issues in psi. Might be best to leave psi unbounded for stability.
+        a = phi_min + dpsi_min
+        b = phi_max + dpsi_max
+        span = b - a
+        c = (a + np.pi) % (2*np.pi) - np.pi
+        d = (b + np.pi) % (2*np.pi) - np.pi
+        psi_min = -np.pi if span >= 2*np.pi or d < c else c
+        psi_max = np.pi if span >= 2*np.pi or d < c else d
         f_min, f_max = (0, 1) if self.f is None else (self.f, self.f)
 
         return {
