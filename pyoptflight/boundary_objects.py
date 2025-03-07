@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Callable
 if TYPE_CHECKING:
     from solver import Solver  # Only used during type checking
 from .functions import *
@@ -6,35 +6,30 @@ from .setup import *
 import numpy as np
 from scipy.optimize import differential_evolution
 
+def _optimize_extreme(self, func: Callable, bounds: list[tuple[float, float]]) -> tuple[float, float]:
+    """
+    Given a scalar function `func(x)` and bounds (list of (min, max) for each parameter),
+    returns the (min, max) value over the domain.
+    """
+    # Find minimum
+    res_min = differential_evolution(func, bounds)
+    min_val = res_min.fun
+    # Find maximum by minimizing the negative
+    res_max = differential_evolution(lambda x: -func(x), bounds)
+    max_val = -res_max.fun
+    return min_val, max_val
+
 class BoundaryObj(AutoRepr):
-    """
-    Boundary Object Template
-    """
     def __init__(self, **kwargs) -> None:
         pass
-    def get_xb(self, X, solver: "Solver") -> Dict:
-        pass
-    def get_gb(self, X, solver: "Solver") -> Dict:
-        pass
-    def get_x_range(self, config: "SolverConfig", body: "Body", npoints=1000) -> Dict:
-        pass
-
-# we desire a boundary object that has the following features:
-# Lat Lng Boundaries:
-# - Must specify a lat and a lng 
-# - Can specify a time or leave as None
-#   - Leaving time as None results in an unknown position/velocity/attitude
-#   - Maybe specify a celestial angular offset instead? Leaving None implise unknown.
-#   - In modern astronomy we use ERA (Earth Rotation Angle) to specify the orientation 
-#       which can be mapped to times like TAI, UTC, UT1, etc. May be good to use this definition
-#   - Probably best to specify a ERA for T=0 in the Body object for consistency between ascent/landing 
-#   - Ok what we want is to attach ERA_0 to the LatLng obj. This can be None or defined. Also have a ERA_range 
-#       which can be be None or a tuple of (min, max)
-# - May specify an ERA_0: float or None
-# - May specify an ERA_range: tuple(float, float) or None
-# - Must specify an altitude
-# - Must specify a velocity
-# - Need to get out: state bounds, constraints, and constraint bounds for all states except mass
+    def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
+        return {'pos': [], 'vel': [], 'ctrl': [], 'axis': []}
+    def get_ge(self, Xi, T, solver: "Solver") -> Dict:
+        return {"g": [], "e": []}
+    def get_gb(self, solver: "Solver") -> Dict:
+        return {"lbg": [], "ubg": []}
+    def get_xb(self, solver: "Solver") -> Dict:
+        return {"ubx": [], "lbx": []}
 
 class LatLngBound(BoundaryObj):
     def __init__(
@@ -45,7 +40,6 @@ class LatLngBound(BoundaryObj):
         vel: float, # Velocity in km/s
         f: None | float = None, # Throttle setting. None lets solver determine.
         atti: None | tuple[float, ...] = (0, 0), # Vehicle orientation relative to position. None lets solver determine subject to range. Tuple specifies exact (psi, theta).
-        atti_range: tuple[tuple[float, ...], ...] = ((-np.pi, np.pi), (0, np.pi)), # (min, max) for psi and theta in radians.
         ERA0: None | float = None, # Earth Rotation Angle at T=0 in radians. None lets solver determine subject to range.
         ERA0_range: tuple[float, ...] = (0, 2*np.pi), # (min, max) ERA0 in radians. 
     ) -> None:
@@ -55,44 +49,85 @@ class LatLngBound(BoundaryObj):
         self.vel = vel
         self.f = f
         self.atti = atti
-        self.atti_range = atti_range
         self.ERA0 = ERA0
         self.ERA0_range = ERA0_range
-
-    # TODO: THERE IS A STRONG ARGUMENT TO BE MADE THAT ATTI AND VEL SHOULD ALWAYS BE VERTICAL
-    # What senario would you want your rocket to launch or land at an angle?
-
-    def _optimize_extreme(self, func, bounds):
-        """
-        Given a scalar function `func(x)` and bounds (list of (min, max) for each parameter),
-        returns the (min, max) value over the domain.
-        """
-        # Find minimum
-        res_min = differential_evolution(func, bounds)
-        min_val = res_min.fun
-        # Find maximum by minimizing the negative
-        res_max = differential_evolution(lambda x: -func(x), bounds)
-        max_val = -res_max.fun
-        return min_val, max_val
     
-    def get_x0s(): # For use only in initialization scripts
-        pass
+    def get_x0s(self, solver: "Solver", npoints=100) -> Dict: # For use only in initialization scripts
+        # Need to determine possible pos, vel, f, atti and axis value
+        T_min = sum(solver.T_min)
+        T_max = sum(solver.T_max)
+        omega_0 = solver.body.omega_0
+        if solver.config.landing: # landing
+            if self.ERA0 is not None:
+                self.ERA_range = (self.ERA0 + omega_0*T_min, self.ERA0 + omega_0*T_max)
+            else:
+                self.ERA_range = (self.ERA0_range[0] + omega_0*T_min, self.ERA0_range[1] + omega_0*T_max)
+        else: # ascent
+            if self.ERA0 is None:
+                self.ERA_range = self.ERA0_range
+            else:
+                self.ERA_range = (self.ERA0, self.ERA0)
+                npoints = 1
 
-    def get_g():
-        # If ERA0 is None or Landing then we need to constrain pos to be len r+h (just constraint on x and y)
-        # If ERA0 is not None and Landing then we must ensure x, y = lng @ sum(T)
-        # Similar constraints placed on vel and atti
-        # Constraint on (x**2 + y**2)/(r+h)**2 = cos(lat)**2
-        # Constraint on ca.atan2(y, x) = lng + ERA # caution of ranges here
-        # Assuming vel and atti is vertical
-        # Constraint on (vx**2 + vy**2)/(vel)**2 = cos(lat)**2 ?
-        # Constraint on ca.atan2(vy, vx) = lng + ERA or ca.atan2(-vy, -vx) = lng + ERA depending on landing?
-        # Constraint on (r+h)*[cos(theta)*cos(psi), cos(theta)*sin(psi), -sin(theta)] = [x, y, z] ?
-        pass
+        r = solver.body.r_0 + self.alt
+        theta = np.pi/2 - np.deg2rad(self.lat)
+        speed = -self.vel if solver.config.landing else self.vel
+        phi_range = np.linspace(self.ERA_range[0], self.ERA_range[1], npoints) + np.deg2rad(self.lng)
+
+        poses = np.zeros((npoints, 3))
+        vels = np.zeros((npoints, 3))
+        ctrls = np.zeros((npoints, 3))
+        
+        for i, phi in enumerate(phi_range):
+            x = r*np.sin(theta)*np.cos(phi)
+            y = r*np.sin(theta)*np.sin(phi)
+            z = r*np.cos(theta)
+            poses[i] = np.array([x, y, z])
+
+            vx = speed*np.sin(theta + self.atti[1])*np.cos(phi + self.atti[0]) - omega_0*y
+            vy = speed*np.sin(theta + self.atti[1])*np.sin(phi + self.atti[0]) + omega_0*x
+            vz = speed*np.cos(theta + self.atti[1])
+            vels[i] = np.array([vx, vy, vz])
+
+            f = 0.5 # Default throttle setting
+            psi_ctrl = (phi + self.atti[0] + np.pi) % (2*np.pi) - np.pi
+            theta_ctrl = -np.deg2rad(self.lng) + self.atti[1]
+            ctrls[i] = np.array([f, psi_ctrl, theta_ctrl])
+        return {'pos': poses, 'vel': vels, 'ctrl': ctrls, 'axis': np.array([0, 0, 1])}
+
+    def get_ge(self, Xi, T, solver: "Solver") -> Dict:
+        x, y, z = Xi[1:4]
+        vx, vy, vz = Xi[4:7]
+        vx_rel = vx + solver.body.omega_0*y
+        vy_rel = vy - solver.body.omega_0*x
+        f, psi, theta = Xi[7:10]
+        g = [], e = []
+        if solver.config.landing or self.ERA0 is None:
+            g.append((x**2 + y**2) - ((solver.body.r_0 + self.alt)*np.cos(np.deg2rad(self.lat)))**2) # constraint on length of px, py
+            g.append((vx_rel**2 + vy_rel**2) - (self.vel*np.cos(np.deg2rad(self.lat)))**2) # constraint on length of vx, vy
+            e += [True, True]
+        if self.ERA0 is None:
+            if solver.config.landing:
+                g.append(ca.arctan(y*vx_rel - x*vy_rel, -x*vx_rel - y*vy_rel) - self.atti[0]) # constraint on attitude angle
+            else:
+                g.append(ca.arctan(x*vy_rel - y*vx_rel, x*vx_rel + y*vy_rel) - self.atti[0]) # constraint on attitude angle
+            e.append(True)
+        elif solver.config.landing:
+            T_tot = ca.sum1(ca.vertcat(*[t[-1] for t in T]))
+            g.append(ca.arctan2(y, x) - (ca.fmod(self.ERA0 + solver.body.omega_0*T_tot + np.deg2rad(self.lng) + ca.pi, 2*ca.pi) - ca.pi)) # constraint on position angle at time of landing
+            g.append(ca.arctan(y*vx_rel - x*vy_rel, -x*vx_rel - y*vy_rel) - self.atti[0]) # constraint on attitude angle
+            e += [True, True]
+        return {"g": g, "e": e}
     
-    def get_gb():
-
-        pass
+    def get_gb(self, solver: "Solver") -> Dict:
+        lbg = [], ubg = []
+        if self.ERA0 is None:
+            lbg += 3*[0]
+            ubg += 3*[0]
+        elif solver.config.landing:
+            lbg += 4*[0]
+            ubg += 4*[0]
+        return {"lbg": lbg, "ubg": ubg}
 
     def get_xb(self, solver: "Solver") -> Dict:
         T_min = sum(solver.T_min)
@@ -120,45 +155,33 @@ class LatLngBound(BoundaryObj):
         # Determine min max x, y, z
         px_func = lambda phi: r*np.sin(theta)*np.cos(phi)
         py_func = lambda phi: r*np.sin(theta)*np.sin(phi)
-        px_min, px_max = self._optimize_extreme(px_func, [(phi_min, phi_max)])
-        py_min, py_max = self._optimize_extreme(py_func, [(phi_min, phi_max)])
+        px_min, px_max = _optimize_extreme(px_func, [(phi_min, phi_max)])
+        py_min, py_max = _optimize_extreme(py_func, [(phi_min, phi_max)])
         pz_min, pz_max = r*np.cos(theta), r*np.cos(theta)
 
         # Determine min max vx, vy, vz
-        if self.atti is None:
-            dpsi_min, dpsi_max = self.atti_range[0]
-            dtheta_min, dtheta_max = self.atti_range[1]
-        else:
-            dpsi_min, dpsi_max = self.atti[0], self.atti[0]
-            dtheta_min, dtheta_max = self.atti[1], self.atti[1]
         speed = -self.vel if solver.config.landing else self.vel
-        def vx_func(x):
-            dpsi, dtheta, phi = x
-            x = np.sin(theta + dtheta)*np.cos(phi + dpsi)
-            y = np.sin(theta + dtheta)*np.sin(phi + dpsi)
+        def vx_func(phi):
+            x = np.sin(theta + self.atti[1])*np.cos(phi + self.atti[0])
+            y = np.sin(theta + self.atti[1])*np.sin(phi + self.atti[0])
             vx = speed*x  - omega_0*y*r
             return vx
-        def vy_func(x):
-            dpsi, dtheta, phi = x
-            x = np.sin(theta + dtheta)*np.cos(phi + dpsi)
-            y = np.sin(theta + dtheta)*np.sin(phi + dpsi)
+        def vy_func(phi):
+            x = np.sin(theta + self.atti[1])*np.cos(phi + self.atti[0])
+            y = np.sin(theta + self.atti[1])*np.sin(phi + self.atti[0])
             vy = speed*y + omega_0*x*r
             return vy
-        def vz_func(x):
-            dpsi, dtheta, phi = x
-            vz = speed*np.cos(theta + dtheta)
-            return vz
-        vx_min, vx_max = self._optimize_extreme(vx_func, [(dpsi_min, dpsi_max), (dtheta_min, dtheta_max), (phi_min, phi_max)])
-        vy_min, vy_max = self._optimize_extreme(vy_func, [(dpsi_min, dpsi_max), (dtheta_min, dtheta_max), (phi_min, phi_max)])  
-        vz_min, vz_max = self._optimize_extreme(vz_func, [(dpsi_min, dpsi_max), (dtheta_min, dtheta_max), (phi_min, phi_max)])
+        vx_min, vx_max = _optimize_extreme(vx_func, [(phi_min, phi_max)])
+        vy_min, vy_max = _optimize_extreme(vy_func, [(phi_min, phi_max)])  
+        vz_min, vz_max = speed*np.cos(theta + self.atti[1]), speed*np.cos(theta + self.atti[1])
 
         # Determine min max psi, theta
-        theta_min = -np.deg2rad(self.lng) + dtheta_min
-        theta_max = -np.deg2rad(self.lng) + dtheta_max
+        theta_min = -np.deg2rad(self.lng) + self.atti[1]
+        theta_max = -np.deg2rad(self.lng) + self.atti[1]
         
         # FIXME: May cause issues in psi. Might be best to leave psi unbounded for stability.
-        a = phi_min + dpsi_min
-        b = phi_max + dpsi_max
+        a = phi_min + self.atti[0]
+        b = phi_max + self.atti[0]
         span = b - a
         c = (a + np.pi) % (2*np.pi) - np.pi
         d = (b + np.pi) % (2*np.pi) - np.pi
@@ -170,161 +193,47 @@ class LatLngBound(BoundaryObj):
             "ubx": [px_max, py_max, pz_max, vx_max, vy_max, vz_max, f_max, psi_max, theta_max],
             "lbx": [px_min, py_min, pz_min, vx_min, vy_min, vz_min, f_min, psi_min, theta_min]
         }
-class StateBoundary(AutoRepr):
-    def __init__(self, state, ubx=None, lbx=None) -> None:
-        """
-        Allows representation of state boundaries that are either fully defined or have an unknown phi.
-
-        Parameters:
-            state (list[float or None]): A 6-element state vector.
-            ubx (list[float or None]): Upper bounds on state vector; None indicates strict equality.
-            lbx (list[float or None]): Lower bounds on state vector; None indicates strict equality.
-        """
-        # If no bounds are provided, default to a list of None’s
-        if ubx is None:
-            ubx = [None] * 6
-        if lbx is None:
-            lbx = [None] * 6
-
-        self.state = state
-        # Replace None in bounds with the corresponding state element.
-        self.ubx = [state[i] if ubx[i] is None else ubx[i] for i in range(6)]
-        self.lbx = [state[i] if lbx[i] is None else lbx[i] for i in range(6)]
-
-        self.fully_defined = False if self.state[2] is None else True
-
-    def get_xb(self, X, solver: "Solver") -> Dict:
-        """
-        Returns:
-            dict of lists: {ubx, lbx} -- the upper and lower bounds on the state vector.
-        """
-        return {"ubx": self.ubx, 
-                "lbx": self.lbx}
-
-    def get_gb(self, X, solver: "Solver") -> Dict:
-        """
-        Returns constraints and their bounds.
-        
-        Parameters:
-            X: Optimization variable (state vector) at which the constraint is evaluated.
-            solver (Solver): The solver instance containing problem configuration.
-        Returns:
-            dict: {g, ubg, lbg} -- lists of constraint values and their corresponding upper and lower bounds.
-        """
-        return {"g":[], 
-                "ubg": [], 
-                "lbg": []}
     
-    def get_x_range(self, config: "SolverConfig", body: "Body", npoints=1000) -> Dict:
-        if not self.fully_defined: # If phi is an unknown
-            phi_range = np.linspace(self.lbx[2], self.ubx[2], npoints) #np array
-            x_list =  np.zeros((npoints, 6))
-            for k, phi in enumerate(phi_range):
-                x = np.array([self.state[0], self.state[1], phi, self.state[3], self.state[4], self.state[5]])
-                x_list[k] = x
-            return {"x": x_list, 
-                    "axis": np.array([0, 0, 1])}
+class StateBound(BoundaryObj):
+    def __init__(self, **kwargs) -> None:
+        self.state = kwargs.get("state")
+        self.ubx = kwargs.get("ubx")
+        self.lbx = kwargs.get("lbx")
+        self.pos = kwargs.get("pos")
+        self.vel = kwargs.get("vel")
+        self.ctrl = kwargs.get("ctrl")
+
+    def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
+        if self.state is not None:
+            return {"pos": self.state[:3], "vel": self.state[3:6], "ctrl": self.state[6:9]}
+        elif self.pos is not None and self.vel is not None and self.ctrl is not None:
+            return {"pos": self.pos, "vel": self.vel, "ctrl": self.ctrl}
         else:
-            return {"x": np.array([self.state]), 
-                    "axis": np.array([0, 0, 1])}
+            if self.ubx == self.lbx:
+                return {"pos": self.ubx[:3], "vel": self.ubx[3:6], "ctrl": self.ubx[6:9]}
+            else:
+                poses = np.zeros((npoints, 3))
+                vels = np.zeros((npoints, 3))
+                ctrls = np.zeros((npoints, 3))
+                for i in range(npoints):
+                    state = self.lbx + (self.ubx - self.lbx)*i/(npoints-1)
+                    poses[i] = state[:3]
+                    vels[i] = state[3:6]
+                    ctrls[i] = state[6:9]
+                return {"pos": poses, "vel": vels, "ctrl": ctrls}            
 
-# class LatLngBoundary(StateBoundary):
-#     def __init__(self, lat, lng, alt, v_eps, ub_lng, lb_lng, body: "Body", config: "SolverConfig") -> None:
-#         """
-#         Allows representation of lat/lng boundaries that have unknown Longitude, are fully defined,
-#         or have a Longitude determined at time of landing. 
+    def get_xb(self, solver: "Solver") -> Dict:
+        if self.ubx is not None and self.lbx is not None:
+            if len(self.ubx) == 9 and len(self.lbx) == 9:
+                return {"ubx": self.ubx, "lbx": self.lbx}    
+        elif self.state is not None:
+            if len(self.state) == 9:
+                return {"ubx": self.state, "lbx": self.state}
+        else:
+            self.state = np.concatenate((self.pos, self.vel, self.ctrl))
+            return {"ubx": self.state, "lbx": self.state}
 
-#         Parameters:
-#             lat (float): Latitude in degrees.
-#             lng (float or None): Longitude in degrees; if landing this is the Longitude of the landing location
-#             at the start of the problem; if None the landing/ascent location is unknown.
-#             alt (float): Altitude above the reference radius.
-#             v_eps (float): Radial velocity.
-#             lng_upper (float): Upper bound on longitude (degrees) for phi.
-#             lng_lower (float): Lower bound on longitude (degrees) for phi.
-#             body (Body): The body object containing parameters such as r_0 and psi.
-#             config (SolverConfig): Solver configuration; contains parameters like phi_T0, landing flag, etc.
-#         """
-#         self.lat = lat
-#         self.lng = lng
-#         self.alt = alt
-#         self.lng_upper = ub_lng
-#         self.lng_lower = lb_lng
-
-#         self.fully_defined = False if self.lng is None else True
-
-#         # Compute state components.
-#         r = body.r_0 + alt
-#         theta = np.pi / 2 - np.deg2rad(lat)
-#         # Determine phi: if lng is not provided or if we are in landing mode, leave phi unknown.
-#         if not self.fully_defined or config.landing:
-#             phi = None
-#         else:
-#             phi = config.pmerid_offset + np.deg2rad(lng)
-#         vr = v_eps
-#         omega = 0
-#         psi = body.omega_0
-
-#         self.state = [r, theta, phi, vr, omega, psi]
-
-#         # Set bounds. For phi, if unknown, use the provided longitude bounds.
-#         self.ubx = self.state.copy()
-#         self.lbx = self.state.copy()
-#         if not self.fully_defined or config.landing:
-#             if config.landing: # Formulate bounds around predicted landing zone
-#                 self.ubx[2] = config.pmerid_offset + np.deg2rad(lb_lng) + config.T_init*body.omega_0
-#                 self.lbx[2] = config.pmerid_offset + np.deg2rad(ub_lng) + config.T_init*body.omega_0
-#             else: # Formulate bounds around launch zone
-#                 self.ubx[2] = config.pmerid_offset + np.deg2rad(lb_lng)
-#                 self.lbx[2] = config.pmerid_offset + np.deg2rad(ub_lng)
-#         else: # Enforce strict equality
-#             self.ubx = self.state.copy()
-#             self.lbx = self.state.copy()
-
-#     def get_gb(self, X, solver: "Solver") -> Dict:
-#         """
-#         Defines the constraint for landing: if landing mode is active and longitude is specified,
-#         then the third state variable (phi) is constrained to match:
-        
-#             X[2] - solver.T * solver.body.psi = config.phi_T0 + deg2rad(lng)
-        
-#         Parameters:
-#             X: The current state vector in the optimization.
-#             solver (Solver): The solver instance (contains config and body information).
-        
-#         Returns:
-#             dict: {g, ubg, lbg} for the defined constraint or empty lists if no constraint applies.
-#         """
-#         if solver.config.landing and self.fully_defined:
-#             target_phi = solver.config.pmerid_offset + np.deg2rad(self.lng)
-#             # The constraint is defined such that g = 0 when satisfied.
-#             g = [X[3] - solver.T * solver.body.omega_0 - target_phi]
-#             tol = solver.config.constraints_tol
-#             ubg = [tol]
-#             lbg = [-tol]
-#             return {"g": g, "ubg": ubg, "lbg": lbg}
-#         else:
-#             return {"g":[], "ubg": [], "lbg": []}
-
-#     def get_x_range(self, config: "SolverConfig", body: "Body", npoints=1000) -> Dict:
-#         if not self.fully_defined: # Longitude (by extension phi) is truely unknown
-#             phi_range = np.linspace(self.lbx[2], self.ubx[2], npoints)
-#             x_list  = np.zeros((npoints, 6))
-#             for k, phi in enumerate(phi_range):
-#                 x = np.array([self.state[0], self.state[1], phi, self.state[3], self.state[4], self.state[5]])
-#                 x_list[k] = x
-#             return {"x": x_list, "axis": np.array([0, 0, 1])}
-        
-#         elif config.landing: # phi can be determined from T_init
-#             # For landing mode, generate a guess using a prescribed formula.
-#             x = self.state.copy()
-#             # Update phi according to the landing initialization.
-#             x[2] = config.T_init * body.omega_0 + config.pmerid_offset + np.deg2rad(self.lng)
-#             return {"x": np.array([x]), "axis": np.array([0, 0, 1])}
-#         else:
-#             return {"x": np.array([self.state]), "axis": np.array([0, 0, 1])}
-
-class KeplerianBoundary(AutoRepr):
+class KeplerianBound(AutoRepr):
     """
     Allows representation of kerplarian boundaries that are either fully defined or have an unknown True Anamolys.
 
@@ -334,7 +243,7 @@ class KeplerianBoundary(AutoRepr):
         e, a: Optional Keplarian elements.
         ha, hp: Optional Keplarian elements if e, a are not provided.
     """
-    def __init__(self, i, Ω, ω, body: Body, **kwargs) -> None:
+    def __init__(self, body: Body, i=0, Ω=0, ω=0, **kwargs) -> None:
         ### Should accept e+a or ha+hp
         self.e = kwargs.get("e")
         self.a = kwargs.get("a")
@@ -352,31 +261,68 @@ class KeplerianBoundary(AutoRepr):
         elif self.ha is None or self.hp is None:
             self.ha = self.a*(1+self.e) - body.r_0
             self.hp = self.a*(1-self.e) - body.r_0
+        self.vrel_atti = kwargs.get("vrel_atti")
+        self.global_atti = kwargs.get("global_atti")
+        self.f = kwargs.get("f", 0)
 
-        self.fully_defined = False if self.ν is None else True
+    def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
+        if self.ν is None:
+            ν_range = np.linspace(-np.pi, np.pi, npoints)
+            poses = np.zeros((npoints, 3))
+            vels = np.zeros((npoints, 3))
+            ctrls = np.zeros((npoints, 3))
 
-    def get_xb(self, X, solver: "Solver") -> Dict:
-        """
-        Returns:
-            dict of lists: {ubx, lbx} -- the upper and lower bounds on the state vector.
-        """
-        if not self.fully_defined:
-            ν_range = np.linspace(-np.pi, np.pi, 1000)
-            x_range = np.zeros((1000, 6))
             for k, ν in enumerate(ν_range):
-                x_range[k], _, _ = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, solver.body.mu)
-            x_range = change_basis(x_range, None, "cart", "sph")
-            x_ulim = np.max(x_range, axis=0)
-            x_llim = np.min(x_range, axis=0)
-            x_min = [*(x_llim - 0.05*np.abs(x_llim))]
-            x_max = [*(x_ulim + 0.05*np.abs(x_ulim))]
-            return {"ubx": x_max, "lbx": x_min}
+                pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, solver.body.mu)
+                poses[k] = pos_vel[:3]
+                vels[k] = pos_vel[3:6]
+                if self.vrel_atti is not None:
+                    vel = -pos_vel[3:6] if solver.config.landing else pos_vel[3:6]
+                    vmag = np.linalg.norm(vel)
+                    theta = np.arccos(vel[2]/vmag) - np.pi/2
+                    psi = np.arctan2(vel[1], vel[0])
+                elif self.global_atti is not None:
+                    psi, theta = self.global_atti
+                else:
+                    psi, theta = 0, 0
+                ctrls[k] = np.array([self.f, psi, theta])
+            return {'pos': poses, 'vel': vels, 'ctrl': ctrls, 'axis': h/np.linalg.norm(h)}
         else:
-            x, _, _ = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, solver.body.mu)
-            x = change_basis(x, None, "cart", "sph")
-            return {"ubx": x.tolist(), "lbx": x.tolist()}
+            pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, solver.body.mu)
+            poses = pos_vel[:3]
+            vels = pos_vel[3:6]
+            if self.vrel_atti is not None:
+                vel = -pos_vel[3:6] if solver.config.landing else pos_vel[3:6]
+                vmag = np.linalg.norm(vel)
+                theta = np.arccos(vel[2]/vmag) - np.pi/2 + self.vrel_atti[1]
+                psi = np.arctan2(vel[1], vel[0]) + self.vrel_atti[0]
+            elif self.global_atti is not None:
+                psi, theta = self.global_atti
+            else:
+                psi, theta = 0, 0
+            ctrls = np.array([self.f, psi, theta])
+            return {'pos': poses, 'vel': vels, 'ctrl': ctrls, 'axis': h/np.linalg.norm(h)}
+    
+    def get_ge(self, Xi, T, solver: "Solver") -> Dict:
+        if self.ν is not None:
+            return {"g": [], "e": []}
+        else:
+            x, y, z = Xi[1:4]
+            vx, vy, vz = Xi[4:7]
+            pos = ca.vertcat(x, y, z)
+            vel = ca.vertcat(vx, vy, vz)
+            h_curr = ca.cross(pos, vel)
+            e_curr = ca.cross(vel, h_curr)/solver.body.mu - pos/ca.norm_2(pos)
+            _, h_T, e_T = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, 0, solver.body.mu)
+            g = []
+            e = []
+            for i in range(0, 3):
+                g.append(h_T[i] - h_curr[i])
+                g.append(e_T[i] - e_curr[i])
+                e += [True, True]
+            return {"g": g, "e": e}
         
-    def get_gb(self, X, solver: "Solver") -> Dict:
+    def get_gb(self, solver: "Solver") -> Dict:
         """
         Returns constraints and their bounds.
         
@@ -386,34 +332,61 @@ class KeplerianBoundary(AutoRepr):
         Returns:
             dict of lists: {g, ubg, lbg} -- lists of constraints and their corresponding upper and lower bounds.
         """
-        if self.fully_defined:
-            return {"g": [], "ubg": [], "lbg": []}
+        if self.ν is not None:
+            return {"ubg": [], "lbg": []}
         else:
-            h_curr, e_curr = sym_state_to_he(X[1:7], solver.body.mu)
-            _, h_T, e_T = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, 0, solver.body.mu)
             tol = solver.config.constraints_tol
-            g = []
-            lbg = []
-            ubg = []
-            for i in range(0, 3):
-                g.append(h_T[i] - h_curr[i])
-                g.append(e_T[i] - e_curr[i])
-                lbg += 2*[-tol]
-                ubg += 2*[tol]
-            return {"g": g, 
-                    "ubg": ubg,
-                    "lbg": lbg}
+            return {"ubg": 6*[tol], "lbg": 6*[-tol]}
+        
+    def get_xb(self, solver: "Solver") -> Dict:
+        """
+        Returns:
+            dict of lists: {ubx, lbx} -- the upper and lower bounds on the state vector.
+        """
+        if self.ν is None:
+            ν_range = (-np.pi, np.pi)
+            ubx = []
+            lbx = []
+            for i in range(6):
+                coord_func = lambda ν: kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, solver.body.mu)[0][i]
+                min_val, max_val = _optimize_extreme(self, coord_func, [ν_range])
+                lbx.append(min_val)
+                ubx.append(max_val)
 
-    def get_x_range(self, config: "SolverConfig", body: "Body", npoints=1000) -> Dict:
-        if not self.fully_defined:
-            ν_range = np.linspace(-np.pi, np.pi, npoints)
-            x_list = np.zeros((npoints, 6))
-            for k, ν in enumerate(ν_range):
-                x_list[k], h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, body.mu)
-            x_list = change_basis(x_list, None, "cart", "sph")
-            return {"x": x_list, "axis": h/np.linalg.norm(h)}
+            if self.vrel_atti is not None:
+                def ctrl_fun(ν):
+                    pos_vel, _, _ = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, solver.body.mu)
+                    vel = -pos_vel[3:6] if solver.config.landing else pos_vel[3:6]
+                    vmag = np.linalg.norm(vel)
+                    theta = np.arccos(vel[2]/vmag) - np.pi/2 + self.vrel_atti[1]
+                    psi = np.arctan2(vel[1], vel[0]) + self.vrel_atti[0]
+                    return psi, theta
+                psi_func = lambda ν: ctrl_fun(ν)[0]
+                theta_func = lambda ν: ctrl_fun(ν)[1]
+                psi_min, psi_max = _optimize_extreme(psi_func, [ν_range])
+                theta_min, theta_max = _optimize_extreme(theta_func, [ν_range])
+                lbx += [self.f, psi_min, theta_min]
+                ubx += [self.f, psi_max, theta_max]
+            elif self.global_atti is not None:
+                psi, theta = self.global_atti
+                lbx += [self.f, psi, theta]
+                ubx += [self.f, psi, theta]
+            else:
+                psi, theta = 0, 0
+                lbx += [self.f, psi, theta]
+                ubx += [self.f, psi, theta]
+            return {"ubx": ubx, "lbx": lbx}
+
         else:
-            x, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, body.mu)
-            x = change_basis(x, None, "cart", "sph")
-            return {"x": np.atleast_2d(x), "axis": h/np.linalg.norm(h)}
+            pos_vel, _, _ = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, solver.body.mu)
+            if self.vrel_atti is not None:
+                vel = -pos_vel[3:6] if solver.config.landing else pos_vel[3:6]
+                vmag = np.linalg.norm(vel)
+                theta = np.arccos(vel[2]/vmag) - np.pi/2 + self.vrel_atti[1]
+                psi = np.arctan2(vel[1], vel[0]) + self.vrel_atti[0]
+            elif self.global_atti is not None:
+                psi, theta = self.global_atti
+            else:
+                psi, theta = 0, 0
+            return {"ubx": [*pos_vel, self.f, psi, theta], "lbx": [*pos_vel, self.f, psi, theta]}
         
