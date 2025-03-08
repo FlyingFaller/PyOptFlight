@@ -8,10 +8,10 @@ import time
 def _fix_states(solver: Solver, npoints=250, sep_angle=np.pi/2):
     npoints = 250 if npoints is None else npoints
     sep_angle = np.pi/2 if sep_angle is None else sep_angle
-    x0_data = solver.x0.get_x_range(solver.config, solver.body, npoints)
-    xf_data = solver.xf.get_x_range(solver.config, solver.body, npoints)
-    x0_points = change_basis(x0_data['x'], None, "sph", "cart")[:, 0:3]
-    xf_points = change_basis(xf_data['x'], None, "sph", "cart")[:, 0:3]
+    x0_data = solver.x0.get_x0s(solver, npoints)
+    xf_data = solver.xf.get_x0s(solver, npoints)
+    x0_points = x0_data['pos']
+    xf_points = xf_data['pos']
     x0_axis = x0_data['axis']
     xf_axis = xf_data['axis']
     # print(xf_axis)
@@ -38,14 +38,19 @@ def _fix_states(solver: Solver, npoints=250, sep_angle=np.pi/2):
     min_ij = np.unravel_index(np.argmin(cost_table, axis=None), cost_table.shape)
     print(f'The minimum cost is {cost_table[min_ij]} rad')
     ### TODO: Implement some sort of preference when there are infinite solutions. Periapsis?
-    return x0_data['x'][min_ij[0]], xf_data['x'][min_ij[1]], x0_axis, xf_axis
+    return {'x0': {'pos': x0_data['pos'][min_ij[0]],
+                   'vel': x0_data['vel'][min_ij[0]],
+                   'ctrl': x0_data['ctrl'][min_ij[0]],
+                   'axis': x0_data['axis'][min_ij[0]]},
+            'xf': {'pos': xf_data['pos'][min_ij[1]],
+                   'vel': xf_data['vel'][min_ij[1]],
+                   'ctrl': xf_data['ctrl'][min_ij[1]],
+                   'axis': xf_data['axis'][min_ij[1]]}}
 
 def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
     ### WHERE get_pos(t, p0, p1, v0, v1)
 
-    x0s, xfs, _, _ = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle'))
-    x0c = change_basis(x0s, None, 'sph', 'cart')
-    xfc = change_basis(xfs, None, 'sph', 'cart')
+    x_data = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle'))
 
     ### PREP ###
     spacing = opts.get('spacing', 'T_init')
@@ -60,8 +65,8 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
     else:
         raise Exception(f"Spacing {spacing} does not exist. Choose from 'equal', 'dV', or T_init (default).")
     
-    p0, p1 = x0c[0:3], xfc[0:3]
-    v0, v1 = x0c[3:6], xfc[3:6]
+    p0, p1 = x_data['x0']['pos'], x_data['xf']['pos']
+    v0, v1 = x_data['x0']['vel'], x_data['xf']['vel']
     v0_mag, v1_mag = np.linalg.norm(v0), np.linalg.norm(v1)
 
     ts = np.linspace(0, 1, 1000)
