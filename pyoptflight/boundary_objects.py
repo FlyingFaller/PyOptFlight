@@ -93,7 +93,10 @@ class LatLngBound(BoundaryObj):
             psi_ctrl = (phi + self.atti[0] + np.pi) % (2*np.pi) - np.pi
             theta_ctrl = -np.deg2rad(self.lng) + self.atti[1]
             ctrls[i] = np.array([f, psi_ctrl, theta_ctrl])
-        return {'pos': poses, 'vel': vels, 'ctrl': ctrls, 'axis': np.array([0, 0, 1])}
+        return {'pos': np.atleast_2d(poses), 
+                'vel': np.atleast_2d(vels), 
+                'ctrl': np.atleast_2d(ctrls), 
+                'axis': np.array([0, 0, 1])}
 
     def get_ge(self, Xi, T, solver: "Solver") -> Dict:
         x, y, z = Xi[1:4]
@@ -205,9 +208,15 @@ class StateBound(BoundaryObj):
 
     def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
         if self.state is not None:
-            return {"pos": self.state[:3], "vel": self.state[3:6], "ctrl": self.state[6:9]}
+            return {"pos": np.atleast_2d(self.state[:3]), 
+                    "vel": np.atleast_2d(self.state[3:6]), 
+                    "ctrl": np.atleast_2d(self.state[6:9]),
+                    "axis": np.array([0, 0, 1])} # May be more correct to make zero vector?
         elif self.pos is not None and self.vel is not None and self.ctrl is not None:
-            return {"pos": self.pos, "vel": self.vel, "ctrl": self.ctrl}
+            return {"pos": np.atleast_2d(self.pos), 
+                    "vel": np.atleast_2d(self.vel), 
+                    "ctrl": np.atleast_2d(self.ctrl),
+                    "axis": np.array([0, 0, 1])}
         else:
             if self.ubx == self.lbx:
                 return {"pos": self.ubx[:3], "vel": self.ubx[3:6], "ctrl": self.ubx[6:9]}
@@ -220,7 +229,12 @@ class StateBound(BoundaryObj):
                     poses[i] = state[:3]
                     vels[i] = state[3:6]
                     ctrls[i] = state[6:9]
-                return {"pos": poses, "vel": vels, "ctrl": ctrls}            
+                axis = np.cross(poses[0], poses[-1])
+                axis = axis/np.linalg.norm(axis) if np.linalg.norm(axis) > 0 else np.array([0, 0, 1])
+                return {"pos": np.atleast_2d(poses), 
+                        "vel": np.atleast_2d(vels), 
+                        "ctrl": np.atleast_2d(ctrls),
+                        "axis": axis}            
 
     def get_xb(self, solver: "Solver") -> Dict:
         if self.ubx is not None and self.lbx is not None:
@@ -286,7 +300,6 @@ class KeplerianBound(AutoRepr):
                 else:
                     psi, theta = 0, 0
                 ctrls[k] = np.array([self.f, psi, theta])
-            return {'pos': poses, 'vel': vels, 'ctrl': ctrls, 'axis': h/np.linalg.norm(h)}
         else:
             pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, solver.body.mu)
             poses = pos_vel[:3]
@@ -301,7 +314,10 @@ class KeplerianBound(AutoRepr):
             else:
                 psi, theta = 0, 0
             ctrls = np.array([self.f, psi, theta])
-            return {'pos': poses, 'vel': vels, 'ctrl': ctrls, 'axis': h/np.linalg.norm(h)}
+        return {'pos': np.atleast_2d(poses), 
+                'vel': np.atleast_2d(vels), 
+                'ctrl': np.atleast_2d(ctrls), 
+                'axis': h/np.linalg.norm(h)}
     
     def get_ge(self, Xi, T, solver: "Solver") -> Dict:
         if self.ν is not None:
