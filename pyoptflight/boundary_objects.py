@@ -275,9 +275,10 @@ class KeplerianBound(AutoRepr):
         elif self.ha is None or self.hp is None:
             self.ha = self.a*(1+self.e) - body.r_0
             self.hp = self.a*(1-self.e) - body.r_0
+        # if None (default), max range is assigned. Behavior is a bit clunky may clean up later. 
         self.vrel_atti = kwargs.get("vrel_atti")
         self.global_atti = kwargs.get("global_atti")
-        self.f = kwargs.get("f", 0)
+        self.f = kwargs.get("f")
 
     def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
         if self.ν is None:
@@ -359,6 +360,13 @@ class KeplerianBound(AutoRepr):
         Returns:
             dict of lists: {ubx, lbx} -- the upper and lower bounds on the state vector.
         """
+        if self.f is not None:
+            f_min = self.f
+            f_max = self.f
+        else:
+            f_min = 0
+            f_max = 1
+
         if self.ν is None:
             ν_range = (-np.pi, np.pi)
             ubx = []
@@ -381,16 +389,16 @@ class KeplerianBound(AutoRepr):
                 theta_func = lambda ν: ctrl_fun(ν)[1]
                 psi_min, psi_max = _optimize_extreme(psi_func, [ν_range])
                 theta_min, theta_max = _optimize_extreme(theta_func, [ν_range])
-                lbx += [self.f, psi_min, theta_min]
-                ubx += [self.f, psi_max, theta_max]
+                lbx += [f_min, psi_min, theta_min]
+                ubx += [f_max, psi_max, theta_max]
             elif self.global_atti is not None:
                 psi, theta = self.global_atti
-                lbx += [self.f, psi, theta]
-                ubx += [self.f, psi, theta]
+                lbx += [f_min, psi, theta]
+                ubx += [f_max, psi, theta]
             else:
-                psi, theta = 0, 0
-                lbx += [self.f, psi, theta]
-                ubx += [self.f, psi, theta]
+                # These bounds on psi/theta may break things. Can loosen if needed.
+                lbx += [f_min, -np.pi, -np.pi/2]
+                ubx += [f_max, np.pi, np.pi/2]
             return {"ubx": ubx, "lbx": lbx}
 
         else:
@@ -400,9 +408,14 @@ class KeplerianBound(AutoRepr):
                 vmag = np.linalg.norm(vel)
                 theta = np.arccos(vel[2]/vmag) - np.pi/2 + self.vrel_atti[1]
                 psi = np.arctan2(vel[1], vel[0]) + self.vrel_atti[0]
+                psi_min, psi_max = psi, psi
+                theta_min, theta_max = theta, theta
             elif self.global_atti is not None:
                 psi, theta = self.global_atti
+                psi_min, psi_max = psi, psi
+                theta_min, theta_max = theta, theta
             else:
-                psi, theta = 0, 0
-            return {"ubx": [*pos_vel, self.f, psi, theta], "lbx": [*pos_vel, self.f, psi, theta]}
+                psi_min, psi_max = -np.pi, np.pi
+                theta_min, theta_max = -np.pi/2, np.pi/2
+            return {"ubx": [*pos_vel, f_max, psi_max, theta_max], "lbx": [*pos_vel, f_min, psi_min, theta_min]}
         
