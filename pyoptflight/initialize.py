@@ -97,6 +97,8 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
         # Linearly interpolate the velocity magnitudes for each point.
         seg_vel_mags = (1 - seg_t) * v0_mag + seg_t * v1_mag
         
+        seg_f = (1 - seg_t) * x_data['x0']['ctrl'][0] + seg_t * x_data['xf']['ctrl'][0]
+
         seg_velocities = []
         seg_controls = []
         # Compute the velocity (and control) at each point from the finite-difference tangent.
@@ -111,25 +113,32 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
             
             # Compute a control vector (example: scaled version of the negative/positive direction).
             if solver.config.landing:
-                ctrl = -0.5 * dir
+                ctrl_dir = -dir
             else:
-                ctrl = 0.5 * dir
-            seg_controls.append(ctrl)
+                ctrl_dir = dir
+            psi = np.arctan2(ctrl_dir[1], ctrl_dir[0])
+            theta = np.arccos(ctrl_dir[2]) - np.pi/2
+            seg_controls.append(np.array([seg_f[j], psi, theta]))
         
         # Compute the mass at each point by linear interpolation between the stage's initial and final masses.
         seg_masses = []
         for t_lin in np.linspace(0, 1, solver.N[k] + 1):
             seg_masses.append((1 - t_lin) * stage.m_0 + t_lin * stage.m_f)
 
-        seg_velocities  = np.array(seg_velocities)
-        seg_controls = np.array(seg_controls)
-        seg_masses = np.array(seg_masses)
         seg_time = np.linspace(0, seg_times[k], solver.N[k]+1)
 
-        x, u = change_basis(np.hstack((seg_positions, seg_velocities)), seg_controls, "cart", "sph")
+        # Compute the control rates 
+        seg_control_rates = []
+        for j, dt in enumerate(seg_time[1:] - seg_time[:-1]):
+            seg_control_rates.append((seg_controls[j+1] - seg_controls[j])/dt)
 
-        sol = Solution(X=np.hstack((np.vstack(seg_masses), x)).tolist(),
-                       U=u[:-1].tolist(),
+        seg_velocities  = np.array(seg_velocities)
+        seg_controls = np.array(seg_controls)
+        seg_control_rates = np.array(seg_control_rates)
+        seg_masses = np.array(seg_masses)
+
+        sol = Solution(X=np.block([np.vstack(seg_masses), seg_velocities, seg_controls]).tolist(),
+                       U=seg_control_rates.tolist(),
                        stage=k+1,
                        t=seg_time.tolist(), 
                        )
@@ -137,7 +146,6 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
     return sols
 
 def linear_interpolation(solver: Solver, opts: dict = {}):
-    start_time = time.time()
     def get_pos(t, p0, p1, v0, v1):
         r0, r1 = np.linalg.norm(p0), np.linalg.norm(p1)
         r = (1-t)*r0 + t*r1
