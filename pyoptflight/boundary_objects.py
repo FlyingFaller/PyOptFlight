@@ -39,7 +39,7 @@ class LatLngBound(BoundaryObj):
         alt: float, # Altitude in km
         vel: float, # Velocity in km/s
         f: None | float = None, # Throttle setting. None lets solver determine.
-        atti: None | tuple[float, ...] = (0, 0), # Vehicle orientation relative to position. None lets solver determine subject to range. Tuple specifies exact (psi, theta).
+        atti: tuple[float, ...] = (0, 0), # Vehicle orientation relative to position. Tuple specifies psi and theta relative to r vec.
         ERA0: None | float = None, # Earth Rotation Angle at T=0 in radians. None lets solver determine subject to range.
         ERA0_range: tuple[float, ...] = (0, 2*np.pi), # (min, max) ERA0 in radians. 
     ) -> None:
@@ -286,6 +286,7 @@ class KeplerianBound(AutoRepr):
             poses = np.zeros((npoints, 3))
             vels = np.zeros((npoints, 3))
             ctrls = np.zeros((npoints, 3))
+            f = 0.5 if self.f is None else self.f
 
             for k, ν in enumerate(ν_range):
                 pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, solver.body.mu)
@@ -300,7 +301,7 @@ class KeplerianBound(AutoRepr):
                     psi, theta = self.global_atti
                 else:
                     psi, theta = 0, 0
-                ctrls[k] = np.array([self.f, psi, theta])
+                ctrls[k] = np.array([f, psi, theta])
         else:
             pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, solver.body.mu)
             poses = pos_vel[:3]
@@ -314,7 +315,7 @@ class KeplerianBound(AutoRepr):
                 psi, theta = self.global_atti
             else:
                 psi, theta = 0, 0
-            ctrls = np.array([self.f, psi, theta])
+            ctrls = np.array([f, psi, theta])
         return {'pos': np.atleast_2d(poses), 
                 'vel': np.atleast_2d(vels), 
                 'ctrl': np.atleast_2d(ctrls), 

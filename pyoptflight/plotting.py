@@ -136,7 +136,7 @@ def plot_spheres(spheres: List[Dict],
 
 def plot_trajectory(fig, pos, vel, ctrl, 
                     markers: str|None = None, freq=20, scale=100, 
-                    colorscale: str|None = None, color='blue'):
+                    colorscale: str|None = None, color='blue', cmin = 0, cmax=1):
     x = pos[:, 0]
     y = pos[:, 1]
     z = pos[:, 2]
@@ -150,16 +150,16 @@ def plot_trajectory(fig, pos, vel, ctrl,
     theta = ctrl[:, 2]
 
     # Maybe add AoA or Max Q colorscales later ? # TODO
+    N = len(x)
     if colorscale == 'f':
         color_dict = dict(color=f, colorscale='viridis', width=7, cmin=0, cmax=1)
-        mkr_mag_min = 0
-        mkr_mag_max = 1
+        cscale = scale + f
     elif colorscale == 'vel':
-        color_dict = dict(color=vmag, colorscale='viridis', width=7, cmin=np.min(vmag), cmax=np.max(vmag))
-        mkr_mag_min = np.min(vmag)
-        mkr_mag_max = np.max(vmag)
+        color_dict = dict(color=vmag, colorscale='viridis', width=7, cmin=cmin, cmax=cmax)
+        cscale = scale + vmag
     else:
         color_dict = dict(color=color, width=7)
+        cscale = scale + 0.5*np.ones(N)
 
     fig.add_trace(go.Scatter3d(x=x, y=y, z=z, 
                                mode='lines', 
@@ -167,26 +167,21 @@ def plot_trajectory(fig, pos, vel, ctrl,
                                line=color_dict))
     
     # Periodically add arrow vectors along the trajectory
-    N = len(x)
     if markers is not None:
         num_steps = max(2, round(N/freq)+1)
         for i in np.linspace(0, N - 1, num_steps, dtype=int):
             if markers == 'ctrl':
-                ctrl_dir = np.array([
+                mkr_dir = np.array([
                     np.cos(psi[i])*np.cos(theta[i]),
-                    np.sin(psi[i])*np.cos(theta[i])
+                    np.sin(psi[i])*np.cos(theta[i]),
                     -np.sin(theta[i])
-                ])
-                mkr_dir = ctrl_dir * scale + f[i]
-                
+                ])*cscale[i]
             elif markers == 'vel':
-                vel_dir = vel[i]/vmag[i]
-                mkr_dir = vel_dir*scale + vmag[i]
-            # Scale the control vector for visualization
+                mkr_dir = vel[i]/vmag[i]*cscale[i]
 
             # For cones, mimic a solid color by using a constant colorscale.
             if colorscale is None:
-                cone_colorscale = [[mkr_mag_min, color], [mkr_mag_max, color]]
+                cone_colorscale = [[0, color], [1, color]]
                 cone_trace = go.Cone(
                     x=[x[i]],
                     y=[y[i]],
@@ -207,8 +202,8 @@ def plot_trajectory(fig, pos, vel, ctrl,
                     w=[mkr_dir[2]],
                     showscale=False,
                     colorscale='viridis',
-                    cmin=scale+mkr_mag_min,
-                    cmax=scale+mkr_mag_max
+                    cmin=scale+cmin,
+                    cmax=scale+cmax
                 )
             fig.add_trace(cone_trace)
             
@@ -479,6 +474,16 @@ def plot_solutions(solver: Solver,
             e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(np.array(pos_vel), solver.body.mu)
             fig = plot_orbit(fig, e, a, i, ω, Ω, solver.body.mu)
 
+        if colorscale == 'vel':
+            cmin = min([np.min(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.sols[idx]])
+            cmax = max([np.max(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.sols[idx]])
+        elif colorscale == 'f':
+            cmin = 0
+            cmax = 1
+        else:
+            cmin = 0
+            cmax = 1
+
         for k in range(0, solver.nstages):
             sol = solver.sols[idx][k]
             fig = plot_trajectory(fig, 
@@ -487,7 +492,9 @@ def plot_solutions(solver: Solver,
                                   np.array(sol.X)[:, 7:10],
                                   markers=markers, 
                                   colorscale = colorscale,
-                                  color=stage_colors[k%len(stage_colors)])
+                                  color=stage_colors[k%len(stage_colors)],
+                                  cmin=cmin,
+                                  cmax=cmax)
             
     if show_stars:
         fig = add_background_stars(fig)

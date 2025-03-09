@@ -41,11 +41,11 @@ def _fix_states(solver: Solver, npoints=250, sep_angle=np.pi/2):
     return {'x0': {'pos': x0_data['pos'][min_ij[0]],
                    'vel': x0_data['vel'][min_ij[0]],
                    'ctrl': x0_data['ctrl'][min_ij[0]],
-                   'axis': x0_data['axis'][min_ij[0]]},
+                   'axis': x0_data['axis']},
             'xf': {'pos': xf_data['pos'][min_ij[1]],
                    'vel': xf_data['vel'][min_ij[1]],
                    'ctrl': xf_data['ctrl'][min_ij[1]],
-                   'axis': xf_data['axis'][min_ij[1]]}}
+                   'axis': xf_data['axis']}}
 
 def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
     ### WHERE get_pos(t, p0, p1, v0, v1)
@@ -137,7 +137,7 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
         seg_control_rates = np.array(seg_control_rates)
         seg_masses = np.array(seg_masses)
 
-        sol = Solution(X=np.block([np.vstack(seg_masses), seg_velocities, seg_controls]).tolist(),
+        sol = Solution(X=np.block([np.vstack(seg_masses), seg_positions, seg_velocities, seg_controls]).tolist(),
                        U=seg_control_rates.tolist(),
                        stage=k+1,
                        t=seg_time.tolist(), 
