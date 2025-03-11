@@ -180,6 +180,8 @@ def cubic_bezier_spline(solver: Solver, opts: dict = {}):
     return {'sols': sols, 'status': None, 'success': True, 'iter_count': 0}
 
 def gravity_turn(solver: Solver, opts: dict = {}):
+    def rotate(vec, axis, angle):
+        return vec*np.cos(angle) + np.cross(axis, vec)*np.sin(angle) + axis*np.dot(axis, vec)*(1 - np.cos(angle))
     if solver.config.landing:
         raise NotImplementedError("Landing not possible with this method.")
 
@@ -189,31 +191,32 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     ### MULTISTAGE SETUP
     ### DETERMINE FIXED STATES GUESS ###
-    x0s, xfs, x0_axis, xf_axis = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle')) # Init
-    x0c = change_basis(x0s, None, "sph", "cart") # To cartesian 
-    xfc = change_basis(xfs, None, "sph", "cart") # To cartesian
-    rot_angle = np.arccos(np.dot(xf_axis, x0c[0:3])/x0s[0]) # Angle between xf plane normal an x0
-    Yp = np.cross(xf_axis, x0c[0:3]) # Axis normal to x0 and xf
+    x_data = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle')) # Init
+    x0_pos, x0_vel, x0_ctrl, x0_axis = x_data['x0']['pos'], x_data['x0']['vel'], x_data['x0']['ctrl'], x_data['x0']['axis']
+    xf_pos, xf_vel, xf_ctrl, xf_axis = x_data['xf']['pos'], x_data['xf']['vel'], x_data['xf']['ctrl'], x_data['xf']['axis']
+    rot_angle = np.arccos(np.dot(xf_axis, x0_pos)/np.linalg.norm(x0_pos)) # Angle between xf plane normal an x0
+    Yp = np.cross(xf_axis, x0_pos) # Axis normal to x0 and xf
     Yp = Yp/np.linalg.norm(Yp)
-    x0cr = rotate_trajectory(x0c, None, Yp, np.pi/2 - rot_angle, "cart", "cart") # Rotate x0 into plane of xf
-    Xp = x0cr[0:3]/x0s[0]
+    x0_pos_rot = rotate(vec=x0_pos, axis=Yp, angle=np.pi/2-rot_angle)
+    x0_vel_rot = rotate(vec=x0_vel, axis=Yp, angle=np.pi/2-rot_angle)
+    Xp = x0_pos_rot/np.linalg.norm(x0_pos_rot)
     Zp = xf_axis
     R = np.array([Xp, Yp, Zp])
-    x0cp = np.concatenate((R@(x0cr[0:3]), R@(x0cr[3:6])))
-    xfcp = np.concatenate((R@(xfc[0:3]), R@(xfc[3:6])))
-    x0sp = change_basis(x0cp, None, "cart", "sph")
-    xfsp = change_basis(xfcp, None, "cart", "sph")
+    x0p_pos = R@x0_pos_rot
+    x0p_vel = R@x0_vel_rot
+    xfp_pos = R@xf_pos
+    xfp_vel = R@xf_vel
 
     ### COMPUTE INTIALS FOR GTRUN SOLVER ###
-    v_init = np.linalg.norm(x0cp[3:6])
+    v_init = np.linalg.norm(x0p_vel)
     beta_init = 0.05*ca.pi
-    h_init = x0sp[0] - solver.body.r_0
-    phi_init = x0sp[2]
+    h_init = np.linalg.norm(x0p_pos) - solver.body.r_0
+    phi_init = np.arctan2(x0p_pos[1], x0p_pos[0])
 
-    v_T = np.linalg.norm(xfcp[3:6])
-    beta_T = np.arccos(np.dot(xfcp[0:3], xfcp[3:6])/(xfsp[0]*v_init))
-    h_T = xfsp[0] - solver.body.r_0
-    phi_T = xfsp[2]
+    v_T = np.linalg.norm(xfp_vel)
+    beta_T = np.arccos(np.dot(xfp_pos, xfp_vel)/(np.linalg.norm(xfp_pos)*np.linalg.norm(xfp_vel)))
+    h_T = np.linalg.norm(xfp_pos) - solver.body.r_0
+    phi_T = np.arctan2(xfp_pos[1], xfp_pos[0])
     
     #######################
     ### SETUP SYMBOLICS ###
@@ -335,7 +338,6 @@ def gravity_turn(solver: Solver, opts: dict = {}):
     ### Create optimization func ###
     # Maximize remaining mass of last stage normalized by mass of last stage
     opt_func = (solver.stages[-1].m_0 - X[-1][-1][0])/(solver.stages[-1].m_0 - solver.stages[-1].m_f)
-    # opt_func = (solver.stages[0].m_0 - X[-1][-1][0])/(solver.stages[0].m_0 - solver.stages[-1].m_f)
 
     #############
     ### SOLVE ###
@@ -358,48 +360,38 @@ def gravity_turn(solver: Solver, opts: dict = {}):
     u_res = np.array(V_res[npar : npar + solver.Nu*nu]).reshape((solver.Nu, nu)) # (Nu, nu)
     x_res = np.array(V_res[npar + solver.Nu*nu : ]).reshape((solver.Nx, nx)) # (Nx, nx)
 
-    # for k in range(0, nstages):
-    #     ### SAVE RESULTS IN SOL OBJS SO THEY CAN BE ACCESSED IN NEXT ITER ###
-    #     sol = Solution(X=x_res[k*(solver.config.N+1) : (k+1)*(solver.config.N+1)].tolist(),
-    #         U=u_res[k*solver.config.N : (k+1)*solver.config.N].tolist(),
-    #         stage=k+1, 
-    #         t=np.linspace(0, T_res[k], solver.config.N+1).tolist(),
-    #         status=nlpsolver.stats()['return_status'],
-    #         limits={},
-    #         soltype='inter')
-
-    #     sols.append(sol)
-
     #########################
     ### PREPARE SOLUTIONS ###
     #########################
-
+    #  0, 1, 2,    3, 4
+    # [m, v, beta, h, phi]
     # Extend u_res by one at each stage inerface to be same length as x_res
-    u_res = np.insert(u_res, np.cumsum(solver.N), np.ones((nu)), axis=0)
+    ins_idx = np.cumsum(solver.N)
+    ins_vals = np.vstack((u_res[ins_idx[:-1]], u_res[-1]))
+    u_res = np.insert(u_res, ins_idx, ins_vals, axis=0) # u_res should now be size (sum(N+1), nu)
 
-    xsp = np.array([
-        x_res[:, 3] + solver.body.r_0,
-        np.full((solver.Nx), np.pi/2),
-        x_res[:, 4],
-        x_res[:, 1]*np.cos(x_res[:, 2]),
-        np.zeros((solver.Nx)),
-        x_res[:, 1]*np.sin(x_res[:, 2])/(x_res[:, 3] + solver.body.r_0),
-    ]).T
-    ctrlsp = np.array([
-        u_res.flatten(),
-        np.zeros_like(u_res.flatten()),
-        x_res[:, 2]
-    ]).T
+    xp_r = x_res[:, 3] + solver.body.r_0
+    xp_theta = np.full((solver.Nx), np.pi/2)
+    xp_phi = x_res[:, 4]
+    R_sph = np.array([
+        [np.sin(xp_theta) * np.cos(xp_phi), np.sin(xp_theta) * np.sin(xp_phi), np.cos(xp_theta)],  # er
+        [np.cos(xp_theta) * np.cos(xp_phi), np.cos(xp_theta) * np.sin(xp_phi), -np.sin(xp_theta)], # etheta
+        [-np.sin(xp_phi), np.cos(xp_phi), np.zeros(solver.Nx)]                                   # ephi
+    ]) # shape is (3, 3, Nx)
+
+    R_sph = np.moveaxis(R_sph, -1, 0) # shape should now be (Nx, 3, 3)
+
+    xp_pos = R_sph[:, 0]*xp_r[:, np.newaxis]
+
+    xp_beta = x_res[:, 2]
+    xp_vmag = x_res[:, 1]
+    xp_vsph = np.array([xp_vmag*np.cos(xp_beta), np.zeros(solver.Nx), xp_vmag*np.sin(xp_beta)]).T
+    R_sph_T = np.transpose(R_sph, axes=(0, 2, 1))
+    xp_vel = np.matmul(R_sph_T, xp_vsph[..., np.newaxis]).squeeze(-1)    
 
     ### NOW GO BACK ###
-    xcp, ctrlcp = change_basis(xsp, ctrlsp, "sph", "cart")
-    xc = np.empty_like(xcp)
-    ctrlc = np.empty_like(ctrlcp)
-    for k, (state, control) in enumerate(zip(xcp, ctrlcp)):
-        xc[k] = np.concatenate((R.T @ (state[0:3]), R.T @ (state[3:6])))
-        ctrlc[k] = R.T @ control
-
-    x_sol, u_sol = change_basis(xc, ctrlc, "cart", "sph")
+    x_pos = (R.T @ xp_pos.T).T
+    x_vel = (R.T @ xp_vel.T).T
 
     # Skew if requested
     if opts.get('skew', False):
@@ -407,19 +399,27 @@ def gravity_turn(solver: Solver, opts: dict = {}):
         for i in range(0, solver.Nx):
             # Calculate rot_angle based on phi of 2D solution
             angle = (rot_angle-np.pi/2)*(1-(x_res[i, 4] - x_res[0, 4])/(x_res[-1, 4] - x_res[0, 4]))**opts.get('skew_strength', 5)
-            x_sol[i], u_sol[i] = rotate_trajectory(x_sol[i], u_sol[i], Yp, angle)
+            x_pos[i] = rotate(vec=x_pos[i], axis=Yp, angle=angle)
+            x_vel[i] = rotate(vec=x_vel[i], axis=Yp, angle=angle)
+
+    x_ctrl = np.array([u_res.flatten(), np.arctan2(x_vel[:, 1], x_vel[:, 0]), np.arcsin(-x_vel[:, 2]/xp_vmag)]).T
 
     sols = []
     for k in range(0, solver.nstages):
-        m = x_res[sum(solver.N[0:k]) + k: sum(solver.N[0:k+1]) + k+1, 0]
-        states = x_sol[sum(solver.N[0:k]) + k: sum(solver.N[0:k+1]) + k+1]
-        ctrls = u_sol[sum(solver.N[0:k]) + k: sum(solver.N[0:k+1]) + k]
+        block_start = sum(solver.N[0:k]) + k 
+        block_end = sum(solver.N[0:k+1]) + k+1
+        m = x_res[block_start : block_end, 0]
+        pos = x_pos[block_start: block_end]
+        vel = x_vel[block_start: block_end]
+        ctrl = x_ctrl[block_start: block_end]
+        t, dt = np.linspace(0, T_res[k], solver.N[k]+1, retstep=True)
+        ctrl_rate = (ctrl[1:] - ctrl[:-1])/dt
 
         sols.append(
-            Solution(X=np.hstack((m.reshape(-1, 1), states)).tolist(),
-                U=ctrls.tolist(),
+            Solution(X=np.block([m[:, np.newaxis], pos, vel, ctrl]).tolist(),
+                U=ctrl_rate.tolist(),
                 stage=k+1, 
-                t=np.linspace(0, T_res[k], solver.N[k]+1).tolist(),
+                t=t.tolist(),
                 )
             )
     return {'sols': sols, 
