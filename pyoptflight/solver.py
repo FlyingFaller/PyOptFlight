@@ -38,6 +38,7 @@ class Solver(AutoRepr):
         self.status = None
         self.success = True
         self.runtime = 0
+        self.nlp_creation_time = 0
         self.iter_count = 0
         self.nsolves = 0
 
@@ -73,7 +74,8 @@ class Solver(AutoRepr):
                 'runtime': self.runtime,
                 'iter_count': self.iter_count,
                 'T': self.T,
-                'nsolves': self.nsolves}
+                'nsolves': self.nsolves,
+                'nlp_creation_time': self.nlp_creation_time}
 
     def initialize_from_func(self, init_func: Callable, opts: Dict) -> None:
         """Initializes solver with sols computed by a function"""
@@ -709,13 +711,13 @@ class Solver(AutoRepr):
             N = self.N[k]
              # Decision vars for this stage
             Vk = ca.MX.sym('V', (N+1)*nx + (N+1)*1 + N*nu)
-            Uk = [Vk[(nx+nu+1)*i + nx + 1 : (nx+nu+1)*(i+1)] for i in range(N)]
             Xk = [Vk[(nx+nu+1)*i : (nx+nu+1)*(i+1) - nu - 1] for i in range(N+1)]
             Tk = [Vk[(nx+nu+1)*i + nx] for i in range(N+1)]
+            Uk = [Vk[(nx+nu+1)*i + nx + 1 : (nx+nu+1)*(i+1)] for i in range(N)]
             V.append(Vk)
             X.append(Xk)
-            U.append(Uk)
             T.append(Tk)
+            U.append(Uk)
             
         for k, stage in enumerate(self.stages):
             ### EOMS ###
@@ -777,70 +779,168 @@ class Solver(AutoRepr):
 
                 if i == 0 and k == 0: # Has to be here to give fatrop correct C, D matrix structure
                     # Add in initial constraints
-                    gb_0 = self.x0.get_gb(X[0][0], self)
+                    gb_0 = self.x0.get_ge(X[0][0], T, self)
                     G += gb_0['g']
-                    for (ub, lb) in zip(gb_0['lbg'], gb_0['ubg']):
-                        if ub == lb:
-                            E.append(True)
-                        else:
-                            E.append(False)
+                    E += gb_0['e']
+                else:
+                    # path constraints, make sure vehicle does not go below planet ig
+                    G.append(ca.sumsqr(ca.vertcat(X[k][i][1:4])) - self.body.r_0**2)
+                    E.append(False)
 
             if k+1 < self.nstages:
                 # Continuity between stages
                 G.append(X[k+1][0][0] - X[k][-1][0] - (self.stages[k+1].m_0 - self.stages[k].m_f)) # mass
-                G.append(X[k+1][0][1:7] - X[k][-1][1:7]) # pos/vel
-                G.append(X[k+1][0][7:10] - X[k][-1][7:10]) # f/yaw/pitch #TODO: Ensure f==0 at stage interface
+                G.append(X[k+1][0][1:10] - X[k][-1][1:10]) # pos/vel/ctrl
                 E += (nx)*[True]
 
+                # path constraints, make sure vehicle does not go below planet ig
+                G.append(ca.sumsqr(ca.vertcat(X[k][-1][1:4])) - self.body.r_0**2)
+                E.append(False)
 
         # Add in final constraints
-        gb_f = self.xf.get_gb(X[-1][-1], self)
+        gb_f = self.xf.get_ge(X[-1][-1], T, self)
         G += gb_f['g']
-        for (ub, lb) in zip(gb_f['lbg'], gb_f['ubg']):
-            if ub == lb:
-                E.append(True)
-            else:
-                E.append(False)
-            
+        E += gb_f['e']
+
         # Optimization function
         opt_func = (self.stages[-1].m_0 - X[-1][-1][0])/(self.stages[-1].m_0 - self.stages[-1].m_f)
 
         # Create solver
         nlp = {'x': ca.vertcat(*V), 'f': opt_func, 'g': ca.vertcat(*G)}
-        fatrop_opts = {
-            'expand': True,
-            'fatrop': {"mu_init": 0.1},
-            'structure_detection': 'auto',
-            'debug': True,
-            'equality': E
-        }
-        nlpsolver = ca.nlpsol(
-            'nlpsolver', 'fatrop', nlp, fatrop_opts
-        )
-        print(f'Construction of NLP: {time.time()-start_time}')
+
+        if self.extra_opts.get('solver') == 'ipopt':
+            ipopt_opts = {
+                'expand': True
+            }
+            nlpsolver = ca.nlpsol(
+                'nlpsolver', 'ipopt', nlp, ipopt_opts
+                )
+        else:
+            fatrop_opts = {
+                'expand': True,
+                'fatrop': {"mu_init": 0.1},
+                'structure_detection': 'auto',
+                'debug': True,
+                'equality': E
+            }
+            nlpsolver = ca.nlpsol(
+                'nlpsolver', 'fatrop', nlp, fatrop_opts
+            )
+        self.nlpsolver = nlpsolver
+        self.nlp_creation_time = time.time() - start_time
+
+    def solve_nlp(self) -> None:
+        start_time = time.time()
+        if self.nlpsolver is None:
+            raise Exception('NLP Solver must be created with create_nlp()')
+        elif not self.initialized:
+            raise Exception('Solver must be initialized with a guess solution.')
+        
+        # maybe move to solver properties later?
+        nx = 10 
+        nu = 3
+        x0, lbx, ubx, lbg, ubg = [], [], [], [], []
+        # create x0
+        for k in range(self.nstages):
+            for i in range(self.N[k]):
+                x0 += self.sols[-1][k].X[i] + [self.sols[-1][k].t[-1]] + self.sols[-1][k].U[i]
+            x0 += self.sols[-1][k].X[-1] + [self.sols[-1][k].t[-1]]
+                
+        # create lbg ubg
+        for k in range(self.nstages):
+            for i in range(self.N[k]):
+                # gap closing, physics and time have to match
+                lbg += (nx+1)*[0]
+                ubg += (nx+1)*[0]
+
+                if i == 0 and k == 0:
+                    # initial constraints lbg ubg
+                    gb_0 = self.x0.get_gb(self)
+                    lbg += gb_0['lbg']
+                    ubg += gb_0['ubg']
+                else:
+                    # path constraints
+                    lbg.append(0)
+                    ubg.append(109225)
+
+            if k+1 < self.nstages:
+                # stage continuity
+                lbg += nx*[0]
+                ubg += nx*[0]
+
+                # path constraints
+                lbg.append(0)
+                ubg.append(109225)
 
 
-# TODO: THINGS NEEDING REWRITE:
-# boundary_objects.py:
-#   * All objs should have (optional) arguments for fixing f, gamma, beta
-#   * __init__ and get_xb need updating
-#   * get_x_range should probably only have solver as its only called by solver initalize method
-#
-# initialize.py:
-#   * _fix_states appears ok but only because it calls get_x_range which hasn't been updated
-#   * _linear_methods needs to move seg_velocities to X output and find a way to estimate new U (finite difference?)
-#       ~ change_basis may need updating to handle new U in this func
-#   * gravity_turn  
-#       ~ make f a state and df a control
-#       ~ new initial guess for f (0.5?) and df (0?)
-#       ~ bounds of u are now additional bounds on x
-#       ~ may need bounds on df but try unbounded
-#       ~ everything after 'prepare solutions' needs to be adjusted
-# functions.py:
-#   * change_basis should be succeeded by one which uses rotation matricies 
-#     and has only one input and one output
-#       ~ input can vary in width (3 = pos, 6=pos/vel, 7 = m/pos/vel, ect) maybe 
-#       ~ there could be an mask provided to specifiy if it is a pos/vel/control/ignore
-#   * rotate_trajectory should be change in the same way change_basis was
-# plotting.py
-#   * plot_solution should be adjusted slightly to feed plot_trajectory correct data
+        # final constraint lbg ubg
+        gb_f = self.xf.get_gb(self)
+        lbg += gb_f['lbg']
+        ubg += gb_f['ubg']
+
+        # create lbx ubx
+        # free states, may adjust later
+        ubx_free = 6*[ca.inf] + [1, ca.pi, ca.pi/2]
+        lbx_free = 6*[-ca.inf] + [0, -ca.pi, -ca.pi/2]
+        ubu_free = [1, 0.5, 0.5]
+        lbu_free = [-1, -0.5, -0.5]
+        for k, stage in enumerate(self.stages):
+            m_0 = stage.m_0
+            m_f = stage.m_f
+            T_min = self.T_min[k]
+            T_max = self.T_max[k]
+
+            if k+1 == 1:
+                # first node first stage
+                xb_0 = self.x0.get_xb(self)
+                lbx += [m_0] + xb_0['lbx'] + [T_min] + lbu_free
+                ubx += [m_0] + xb_0['ubx'] + [T_max] + ubu_free
+            else:
+                # first node other stages
+                lbx += [m_0] + lbx_free + [T_min] + lbu_free
+                ubx += [m_0] + ubx_free + [T_max] + ubu_free
+
+            lbx += (self.N[k]-1)*([m_f] + lbx_free + [T_min] + lbu_free)
+            ubx += (self.N[k]-1)*([m_0] + ubx_free + [T_max] + ubu_free)
+
+            if k+1 == self.nstages:
+                # last node last stage
+                xb_f = self.xf.get_xb(self)
+                lbx += [m_f] + xb_f['lbx'] + [T_min]
+                ubx += [m_0] + xb_f['ubx'] + [T_max]
+            else:
+                # last node other stages
+                lbx += [m_f] + lbx_free + [T_min]
+                ubx += [m_f] + ubx_free + [T_max]
+
+        # SOLVE #
+        result = self.nlpsolver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+
+        # PARSE RESULTS #
+        V_res = np.array(result['x']).flatten()
+        N_arr = np.array(self.N)
+        blocks = np.concatenate(([0], np.cumsum((N_arr+1)*(nx+1) + N_arr*nu)))
+        intersols = []
+        for k in range(self.nstages):
+            N = self.N[k]
+            Vk = V_res[blocks[k] : blocks[k+1]]
+            Xk = np.array([Vk[(nx+nu+1)*i : (nx+nu+1)*(i+1) - nu - 1] for i in range(N+1)])
+            Tk = np.array([Vk[(nx+nu+1)*i + nx] for i in range(N+1)])
+            Uk = np.array([Vk[(nx+nu+1)*i + nx + 1 : (nx+nu+1)*(i+1)] for i in range(N)])
+            t_res = np.linspace(0, Tk[-1], N + 1)
+            sol = Solution(X=Xk.tolist(),
+                U=Uk.tolist(),
+                stage=k+1,
+                t=t_res.tolist(),
+                )
+            intersols.append(sol)
+        self.sols.append(intersols)
+
+        ### UPDATE STATS ###
+        self.status = self.nlpsolver.stats()['return_status']
+        self.success = self.status == 'Solve_Succeeded'
+        self.iter_count = self.nlpsolver.stats()['iter_count']
+        self.T_init = [sol.t[-1] for sol in self.sols[-1]]
+        self.T = sum(self.T_init)
+        self.nsolves = len(self.sols)
+        self.runtime = time.time() - start_time
