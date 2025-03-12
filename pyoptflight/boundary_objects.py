@@ -6,7 +6,7 @@ from .setup import *
 import numpy as np
 from scipy.optimize import differential_evolution
 
-def _optimize_extreme(self, func: Callable, bounds: list[tuple[float, float]]) -> tuple[float, float]:
+def _optimize_extreme(func: Callable, bounds: list[tuple[float, float]]) -> tuple[float, float]:
     """
     Given a scalar function `func(x)` and bounds (list of (min, max) for each parameter),
     returns the (min, max) value over the domain.
@@ -99,12 +99,13 @@ class LatLngBound(BoundaryObj):
                 'axis': np.array([0, 0, 1])}
 
     def get_ge(self, Xi, T, solver: "Solver") -> Dict:
-        x, y, z = Xi[1:4]
-        vx, vy, vz = Xi[4:7]
+        x, y, z = Xi[1], Xi[2], Xi[3]
+        vx, vy, vz = Xi[4], Xi[5], Xi[6]
         vx_rel = vx + solver.body.omega_0*y
         vy_rel = vy - solver.body.omega_0*x
-        f, psi, theta = Xi[7:10]
-        g = [], e = []
+        f, psi, theta = Xi[7], Xi[8], Xi[9]
+        g = []
+        e = []
         if solver.config.landing or self.ERA0 is None:
             g.append((x**2 + y**2) - ((solver.body.r_0 + self.alt)*np.cos(np.deg2rad(self.lat)))**2) # constraint on length of px, py
             g.append((vx_rel**2 + vy_rel**2) - (self.vel*np.cos(np.deg2rad(self.lat)))**2) # constraint on length of vx, vy
@@ -123,7 +124,8 @@ class LatLngBound(BoundaryObj):
         return {"g": g, "e": e}
     
     def get_gb(self, solver: "Solver") -> Dict:
-        lbg = [], ubg = []
+        lbg = []
+        ubg = []
         if self.ERA0 is None:
             lbg += 3*[0]
             ubg += 3*[0]
@@ -156,8 +158,8 @@ class LatLngBound(BoundaryObj):
         phi_max = self.ERA_range[1] + np.deg2rad(self.lng)
 
         # Determine min max x, y, z
-        px_func = lambda phi: r*np.sin(theta)*np.cos(phi)
-        py_func = lambda phi: r*np.sin(theta)*np.sin(phi)
+        px_func = lambda phi: r*np.sin(theta)*np.cos(phi[0])
+        py_func = lambda phi: r*np.sin(theta)*np.sin(phi[0])
         px_min, px_max = _optimize_extreme(px_func, [(phi_min, phi_max)])
         py_min, py_max = _optimize_extreme(py_func, [(phi_min, phi_max)])
         pz_min, pz_max = r*np.cos(theta), r*np.cos(theta)
@@ -165,13 +167,13 @@ class LatLngBound(BoundaryObj):
         # Determine min max vx, vy, vz
         speed = -self.vel if solver.config.landing else self.vel
         def vx_func(phi):
-            x = np.sin(theta + self.atti[1])*np.cos(phi + self.atti[0])
-            y = np.sin(theta + self.atti[1])*np.sin(phi + self.atti[0])
+            x = np.sin(theta + self.atti[1])*np.cos(phi[0] + self.atti[0])
+            y = np.sin(theta + self.atti[1])*np.sin(phi[0] + self.atti[0])
             vx = speed*x  - omega_0*y*r
             return vx
         def vy_func(phi):
-            x = np.sin(theta + self.atti[1])*np.cos(phi + self.atti[0])
-            y = np.sin(theta + self.atti[1])*np.sin(phi + self.atti[0])
+            x = np.sin(theta + self.atti[1])*np.cos(phi[0] + self.atti[0])
+            y = np.sin(theta + self.atti[1])*np.sin(phi[0] + self.atti[0])
             vy = speed*y + omega_0*x*r
             return vy
         vx_min, vx_max = _optimize_extreme(vx_func, [(phi_min, phi_max)])
@@ -325,8 +327,8 @@ class KeplerianBound(AutoRepr):
         if self.ν is not None:
             return {"g": [], "e": []}
         else:
-            x, y, z = Xi[1:4]
-            vx, vy, vz = Xi[4:7]
+            x, y, z = Xi[1], Xi[2], Xi[3]
+            vx, vy, vz = Xi[4], Xi[5], Xi[6]
             pos = ca.vertcat(x, y, z)
             vel = ca.vertcat(vx, vy, vz)
             h_curr = ca.cross(pos, vel)
@@ -373,14 +375,14 @@ class KeplerianBound(AutoRepr):
             ubx = []
             lbx = []
             for i in range(6):
-                coord_func = lambda ν: kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, solver.body.mu)[0][i]
-                min_val, max_val = _optimize_extreme(self, coord_func, [ν_range])
+                coord_func = lambda ν: kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν[0], solver.body.mu)[0][i]
+                min_val, max_val = _optimize_extreme(coord_func, [ν_range])
                 lbx.append(min_val)
                 ubx.append(max_val)
 
             if self.vrel_atti is not None:
                 def ctrl_fun(ν):
-                    pos_vel, _, _ = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, solver.body.mu)
+                    pos_vel, _, _ = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν[0], solver.body.mu)
                     vel = -pos_vel[3:6] if solver.config.landing else pos_vel[3:6]
                     vmag = np.linalg.norm(vel)
                     theta = np.arccos(vel[2]/vmag) - np.pi/2 + self.vrel_atti[1]

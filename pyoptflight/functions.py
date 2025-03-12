@@ -170,7 +170,7 @@ def kep_to_state(e, a, i, ω, Ω, ν, μ):
     """Converts Keplerian elements to Cartesian state vector."""
     r = a * (1 - e**2) / (1 + e * np.cos(ν))
     p = a * (1 - e**2)
-    
+
     r_p = np.array([r * np.cos(ν), r * np.sin(ν), 0])
     
     v_p = np.array([
