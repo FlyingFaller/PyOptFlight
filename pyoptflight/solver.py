@@ -730,8 +730,9 @@ class Solver(AutoRepr):
 
             # Supporting Definitions #
             h = ca.sqrt(px**2 + py**2 + pz**2) - self.body.r_0 # Altitude
-            F_max = stage.prop.F_vac + (stage.prop.F_SL - stage.prop.F_vac)*ca.exp(-h/self.body.atm.H) # Max thrust
-            F_eff = F_max*f/(1 + ca.exp(-K*(f - f_min))) # Effective thrust
+            # F_max = stage.prop.F_vac + (stage.prop.F_SL - stage.prop.F_vac)*ca.exp(-h/self.body.atm.H) # Max thrust
+            # F_eff = F_max*f/(1 + ca.exp(-K*(f - f_min))) # Effective thrust
+            F_eff = stage.prop.F_SL*f
             Isp = stage.prop.Isp_vac + (stage.prop.Isp_SL - stage.prop.Isp_vac)*ca.exp(-h/self.body.atm.H) # Isp
             g = -self.body.g_0*self.body.r_0**2*(px**2 + py**2 + pz**2)**(-3/2)*ca.vertcat(px, py, pz) # gravity vector
             rho = self.body.atm.rho_0*ca.exp(-h/self.body.atm.H) # denisty
@@ -739,20 +740,20 @@ class Solver(AutoRepr):
 
             # body fram basis vectors
             ebx = ca.vertcat(ca.cos(psi)*ca.cos(theta), ca.sin(psi)*ca.cos(theta), -ca.sin(theta))
-            eby = ca.vertcat(-ca.sin(psi), ca.cos(psi), 0)
-            ebz = ca.vertcat(ca.cos(psi)*ca.sin(theta), ca.sin(psi)*ca.sin(theta), ca.cos(theta))
+            # eby = ca.vertcat(-ca.sin(psi), ca.cos(psi), 0)
+            # ebz = ca.vertcat(ca.cos(psi)*ca.sin(theta), ca.sin(psi)*ca.sin(theta), ca.cos(theta))
             
             m_dot = -F_eff/(Isp*9.81e-3)
             px_dot = vx
             py_dot = vy
             pz_dot = vz
-            vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[0] + C_Ny*eby[0] + C_Nz*ebz[0])
-            vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[1] + C_Ny*eby[1] + C_Nz*ebz[1])
-            vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[2] + C_Ny*eby[2] + C_Nz*ebz[2])
+            # vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[0] + C_Ny*eby[0] + C_Nz*ebz[0])
+            # vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[1] + C_Ny*eby[1] + C_Nz*ebz[1])
+            # vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[2] + C_Ny*eby[2] + C_Nz*ebz[2])
             # Drag only version if needed in testing
-            # vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[0]
-            # vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[1]
-            # vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[2]
+            vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[0]
+            vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[1]
+            vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[2]
             f_dot = tau
             psi_dot = r/ca.cos(theta)
             theta_dot = q
@@ -810,7 +811,8 @@ class Solver(AutoRepr):
 
         if self.extra_opts.get('solver') == 'ipopt':
             ipopt_opts = {
-                'expand': True
+                'expand': True,
+                'ipopt.nlp_scaling_method': 'none'
             }
             nlpsolver = ca.nlpsol(
                 'nlpsolver', 'ipopt', nlp, ipopt_opts
