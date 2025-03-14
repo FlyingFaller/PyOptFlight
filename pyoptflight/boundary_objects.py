@@ -103,7 +103,6 @@ class LatLngBound(BoundaryObj):
         vx, vy, vz = Xi[4], Xi[5], Xi[6]
         vx_rel = vx + solver.body.omega_0*y
         vy_rel = vy - solver.body.omega_0*x
-        f, psi, theta = Xi[7], Xi[8], Xi[9]
         g = []
         e = []
         if solver.config.landing or self.ERA0 is None:
