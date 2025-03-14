@@ -732,3 +732,156 @@ class Solver(AutoRepr):
         self.T = sum(self.T_init)
         self.nsolves = len(self.sols)
         self.runtime = time.time() - start_time
+
+    def create_nlp_3(self) -> None:
+        # NLP requires V, opt_func, G, equality
+        start_time = time.time()
+        x = ca.SX.sym('[m, px, py, pz, vx, vy, vz, f_prev, psi_prev, theta_prev]', 10, 1)
+        m, px, py, pz, vx, vy, vz, f_prev, psi_prev, theta_prev = x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8], x[9]
+        u = ca.SX.sym('[f, psi, theta]', 3, 1)
+        f, psi, theta = u[0], u[1], u[2]
+
+        nx = x.size1() # Number of states (10)
+        nu = u.size1() # number of control vars (3)
+
+        V = []
+        X = []
+        U = []
+        T = []
+        G = []
+        E = []
+        for k in range(self.nstages):
+            N = self.N[k]
+             # Decision vars for this stage
+            Vk = ca.MX.sym('V', (N+1)*nx + (N+1)*1 + N*nu)
+            Xk = [Vk[(nx+nu+1)*i : (nx+nu+1)*(i+1) - nu - 1] for i in range(N+1)]
+            Tk = [Vk[(nx+nu+1)*i + nx] for i in range(N+1)]
+            Uk = [Vk[(nx+nu+1)*i + nx + 1 : (nx+nu+1)*(i+1)] for i in range(N)]
+            V.append(Vk)
+            X.append(Xk)
+            T.append(Tk)
+            U.append(Uk)
+            
+        for k, stage in enumerate(self.stages):
+            ### EOMS ###
+            # Temp vars before more complete model comes together#
+            f_min = 0
+            K = 100
+            C_A = -stage.aero.C_D
+            C_Ny = stage.aero.C_L
+            C_Nz = stage.aero.C_L
+
+            # Supporting Definitions #
+            h = ca.sqrt(px**2 + py**2 + pz**2) - self.body.r_0 # Altitude
+            # F_max = stage.prop.F_vac + (stage.prop.F_SL - stage.prop.F_vac)*ca.exp(-h/self.body.atm.H) # Max thrust
+            # F_eff = F_max*f/(1 + ca.exp(-K*(f - f_min))) # Effective thrust
+            F_eff = stage.prop.F_SL*f
+            Isp = stage.prop.Isp_vac + (stage.prop.Isp_SL - stage.prop.Isp_vac)*ca.exp(-h/self.body.atm.H) # Isp
+            g = -self.body.g_0*self.body.r_0**2*(px**2 + py**2 + pz**2)**(-3/2)*ca.vertcat(px, py, pz) # gravity vector
+            rho = self.body.atm.rho_0*ca.exp(-h/self.body.atm.H) # denisty
+            v_rel = ca.vertcat(vx + self.body.omega_0*py, vy - self.body.omega_0*px, vz) # atmosphere relative velocity
+
+            # body fram basis vectors
+            ebx = ca.vertcat(ca.cos(psi)*ca.cos(theta), ca.sin(psi)*ca.cos(theta), -ca.sin(theta))
+            # eby = ca.vertcat(-ca.sin(psi), ca.cos(psi), 0)
+            # ebz = ca.vertcat(ca.cos(psi)*ca.sin(theta), ca.sin(psi)*ca.sin(theta), ca.cos(theta))
+            
+            m_dot = -F_eff/(Isp*9.81e-3)
+            px_dot = vx
+            py_dot = vy
+            pz_dot = vz
+            # vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[0] + C_Ny*eby[0] + C_Nz*ebz[0])
+            # vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[1] + C_Ny*eby[1] + C_Nz*ebz[1])
+            # vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[2] + C_Ny*eby[2] + C_Nz*ebz[2])
+            # Drag only version if needed in testing
+            vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[0]
+            vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[1]
+            vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[2]
+
+            ### ODE FUNC AND INTEGRATOR ###
+            ode = ca.vertcat(m_dot, px_dot, py_dot, pz_dot, vx_dot, vy_dot, vz_dot, 0, 0, 0)
+            F_ode = ca.Function('F_ode', [x, u], [ode])
+            # All integrators need x, u, dt (symbolics) and should return x_next
+            dt = ca.SX.sym("dt")
+            if self.config.integration_method == 'RK4': # Implement more int methods later RK4
+                k1 = F_ode(x, u)
+                k2 = F_ode(x + dt/2 * k1, u)
+                k3 = F_ode(x + dt/2 * k2, u)
+                k4 = F_ode(x + dt * k3, u)
+                x_next = x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+                F_int = ca.Function('F_int', [x, u, dt], [x_next])
+            elif self.config.integration_method == 'cvodes':
+                dae = {'x': x, 'u':u, 'p': dt, 'ode': dt*F_ode(x, u)}
+                int_opts = {'nonlinear_solver_iteration': 'functional'}
+                I = ca.integrator('I', 'cvodes', dae, 0.0, 1.0, int_opts)
+                x_mx = ca.MX.sym('[m, px, py, pz, vx, vy, vz, f_prev, psi_prev, theta_prev]', 10, 1)
+                u_mx = ca.MX.sym('[f, psi, theta]', 3, 1)
+                dt_mx = ca.MX.sym('dt_mx')
+                F_int = ca.Function('F_int', [x_mx, u_mx, dt_mx], [I(x0=x_mx, u=u_mx, p=dt_mx)['xf']])
+            else:
+                raise NotImplementedError(f'{self.config.integration_method} is not an implmented integrator.')
+
+            N = self.N[k]
+            for i in range(N):
+                # Do gap closing ig?
+                G.append(X[k][i+1][0:7] - F_int(X[k][i], U[k][i], T[k][i]/N)[0:7])
+                G.append(X[k][i+1][7:10] - U[k][i])
+                G.append(T[k][i+1] - T[k][i])
+                E += (nx + 1)*[True]
+
+                if i == 0 and k == 0: # Has to be here to give fatrop correct C, D matrix structure
+                    # Add in initial constraints
+                    gb_0 = self.x0.get_ge(X[0][0], T, self)
+                    G += gb_0['g']
+                    E += gb_0['e']
+                else:
+                    # path constraints, make sure vehicle does not go below planet ig
+                    G.append(ca.sumsqr(ca.vertcat(X[k][i][1:4])) - self.body.r_0**2)
+                    E.append(False)
+                    # pass
+                G.append((X[k][i][7:10]-U[k][i])/(T[k][i]/N))
+                E += 3*[False]
+
+            if k+1 < self.nstages:
+                # Continuity between stages
+                G.append(X[k+1][0][0] - X[k][-1][0] - (self.stages[k+1].m_0 - self.stages[k].m_f)) # mass
+                G.append(X[k+1][0][1:10] - X[k][-1][1:10]) # pos/vel/ctrl
+                E += (nx)*[True]
+
+                # path constraints, make sure vehicle does not go below planet ig
+                G.append(ca.sumsqr(ca.vertcat(X[k][-1][1:4])) - self.body.r_0**2)
+                E.append(False)
+
+        # Add in final constraints
+        gb_f = self.xf.get_ge(X[-1][-1], T, self)
+        G += gb_f['g']
+        E += gb_f['e']
+
+        # Optimization function
+        opt_func = (self.stages[-1].m_0 - X[-1][-1][0])/(self.stages[-1].m_0 - self.stages[-1].m_f)
+
+        # Create solver
+        nlp = {'x': ca.vertcat(*V), 'f': opt_func, 'g': ca.vertcat(*G)}
+
+        if self.extra_opts.get('solver') == 'ipopt':
+            ipopt_opts = {
+                'expand': self.config.integration_method == 'RK4',
+                'ipopt.nlp_scaling_method': 'none',
+                'ipopt.tol': self.config.solver_tol
+            }
+            nlpsolver = ca.nlpsol(
+                'nlpsolver', 'ipopt', nlp, ipopt_opts
+                )
+        else:
+            fatrop_opts = {
+                'expand': self.config.integration_method == 'RK4',
+                'fatrop': {"mu_init": 0.1},
+                'structure_detection': 'auto',
+                'debug': True,
+                'equality': E,
+            }
+            nlpsolver = ca.nlpsol(
+                'nlpsolver', 'fatrop', nlp, fatrop_opts
+            )
+        self.nlpsolver = nlpsolver
+        self.nlp_creation_time = time.time() - start_time
