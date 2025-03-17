@@ -134,23 +134,32 @@ def plot_spheres(spheres: List[Dict],
                         )
     return fig
 
-def plot_trajectory(fig, state, control, ctrl_markers=True, freq=20, scale=100, use_color=False, color='blue'):
-    r = state[:, 0]
-    theta = state[:, 1]
-    phi = state[:, 2]
+def plot_trajectory(fig, pos, vel, ctrl, 
+                    markers: str|None = None, freq=20, scale=100, 
+                    colorscale: str|None = None, color='blue', cmin = 0, cmax=1):
+    x = pos[:, 0]
+    y = pos[:, 1]
+    z = pos[:, 2]
+    vx = vel[:, 0]
+    vy = vel[:, 1]
+    vz = vel[:, 2]
+    vmag = np.sum(vel**2, axis=1)**0.5
 
-    x = r * np.sin(theta) * np.cos(phi)
-    y = r * np.sin(theta) * np.sin(phi)
-    z = r * np.cos(theta)
+    f = ctrl[:, 0]
+    psi = ctrl[:, 1]
+    theta = ctrl[:, 2]
 
-    f = control[:, 0]
-    gamma = control[:, 1]
-    beta = control[:, 2]
-
-    if use_color:
-        color_dict = dict(color=color, width=7)
-    else:
+    # Maybe add AoA or Max Q colorscales later ? # TODO
+    N = len(x)
+    if colorscale == 'f':
         color_dict = dict(color=f, colorscale='viridis', width=7, cmin=0, cmax=1)
+        cscale = scale + f
+    elif colorscale == 'vel':
+        color_dict = dict(color=vmag, colorscale='viridis', width=7, cmin=cmin, cmax=cmax)
+        cscale = scale + vmag
+    else:
+        color_dict = dict(color=color, width=7)
+        cscale = scale + 0.5*np.ones(N)
 
     fig.add_trace(go.Scatter3d(x=x, y=y, z=z, 
                                mode='lines', 
@@ -158,49 +167,28 @@ def plot_trajectory(fig, state, control, ctrl_markers=True, freq=20, scale=100, 
                                line=color_dict))
     
     # Periodically add arrow vectors along the trajectory
-    N = len(r) - 1
-    if ctrl_markers:
+    if markers is not None:
         num_steps = max(2, round(N/freq)+1)
         for i in np.linspace(0, N - 1, num_steps, dtype=int):
-            # Local unit vectors in spherical coordinates
-            e_r = np.array([
-                np.sin(theta[i]) * np.cos(phi[i]),
-                np.sin(theta[i]) * np.sin(phi[i]),
-                np.cos(theta[i])
-            ])
-
-            e_theta = np.array([
-                np.cos(theta[i]) * np.cos(phi[i]),
-                np.cos(theta[i]) * np.sin(phi[i]),
-                -np.sin(theta[i])
-            ])
-
-            e_phi = np.array([
-                -np.sin(phi[i]),
-                np.cos(phi[i]),
-                0
-            ])
-
-            # Compute the control vector in Cartesian coordinates
-            control_vector = (
-                np.cos(beta[i])*e_r + 
-                np.sin(beta[i])*np.cos(gamma[i])*e_phi  
-                -np.sin(gamma[i])*np.sin(beta[i])*e_theta
-            )
-
-            # Scale the control vector for visualization
-            control_vector *= scale + f[i]
+            if markers == 'ctrl':
+                mkr_dir = np.array([
+                    np.cos(psi[i])*np.cos(theta[i]),
+                    np.sin(psi[i])*np.cos(theta[i]),
+                    -np.sin(theta[i])
+                ])*cscale[i]
+            elif markers == 'vel':
+                mkr_dir = vel[i]/vmag[i]*cscale[i]
 
             # For cones, mimic a solid color by using a constant colorscale.
-            if use_color:
+            if colorscale is None:
                 cone_colorscale = [[0, color], [1, color]]
                 cone_trace = go.Cone(
                     x=[x[i]],
                     y=[y[i]],
                     z=[z[i]],
-                    u=[control_vector[0]],
-                    v=[control_vector[1]],
-                    w=[control_vector[2]],
+                    u=[mkr_dir[0]],
+                    v=[mkr_dir[1]],
+                    w=[mkr_dir[2]],
                     showscale=False,
                     colorscale=cone_colorscale
                 )
@@ -209,19 +197,19 @@ def plot_trajectory(fig, state, control, ctrl_markers=True, freq=20, scale=100, 
                     x=[x[i]],
                     y=[y[i]],
                     z=[z[i]],
-                    u=[control_vector[0]],
-                    v=[control_vector[1]],
-                    w=[control_vector[2]],
+                    u=[mkr_dir[0]],
+                    v=[mkr_dir[1]],
+                    w=[mkr_dir[2]],
                     showscale=False,
                     colorscale='viridis',
-                    cmin=scale,
-                    cmax=scale+1
+                    cmin=scale+cmin,
+                    cmax=scale+cmax
                 )
             fig.add_trace(cone_trace)
             
-    eye_state = state[int((N+1)/2)]
-    eye_theta = eye_state[1] - np.pi/4 if eye_state[1] - np.pi/4 >= np.pi/4 else eye_state[1] + np.pi/4
-    eye_phi = eye_state[2]
+    eye_dir = pos[int((N+1)/2)]/np.linalg.norm(pos[int((N+1)/2)])
+    eye_theta = np.arccos(eye_dir[2]) - np.pi/4 if np.arccos(eye_dir[2]) - np.pi/4 >= np.pi/4 else np.arccos(eye_dir[2]) + np.pi/4
+    eye_phi = np.arctan2(eye_dir[1], eye_dir[0])
     fig.update_traces(showlegend=False)
     fig.update_layout(scene=dict(
                         camera=dict(
@@ -428,6 +416,7 @@ def plot_celestial(body: Body,
                    background_color='black', 
                    show_axis=False, 
                    size=(1000, 1000)):
+    
     body_dict = {'r': body.r_0, 
                  'path': body.meshpath}
     
@@ -447,9 +436,10 @@ def plot_celestial(body: Body,
 def plot_solutions(solver: Solver, 
                    indices = [-1], 
                    show_stars=True, 
-                   show_orbit=False, 
-                   ctrl_markers=False, 
-                   ctrl_colorscale=False, 
+                   show_target_orbit=False,
+                   show_actual_orbit=False,
+                   markers=None, 
+                   colorscale=None, 
                    hpx=512, 
                    background_color='black', 
                    show_axis=False, 
@@ -461,23 +451,53 @@ def plot_solutions(solver: Solver,
                          background_color=background_color,
                          show_axis=show_axis,
                          size=size)
-    if show_orbit:
+    
+    if show_target_orbit:
         if solver.config.landing:
-            orbital_state = solver.x0.get_x_range(solver.config, solver.body, npoints=1)['x'][0]
+            pos = solver.x0.get_x0s(solver, npoints=1)['pos'][0]
+            vel = solver.x0.get_x0s(solver, npoints=1)['vel'][0]
         else:
-            orbital_state = solver.xf.get_x_range(solver.config, solver.body, npoints=1)['x'][0]
-        e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(change_basis(orbital_state, None, "sph", "cart"), solver.body.mu)
+            pos = solver.xf.get_x0s(solver, npoints=1)['pos'][0]
+            vel = solver.xf.get_x0s(solver, npoints=1)['vel'][0]
+        e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(np.block([pos, vel]), solver.body.mu)
         fig = plot_orbit(fig, e, a, i, ω, Ω, solver.body.mu)
+
+
+
     stage_colors = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet']
     for idx in indices:
+        if show_actual_orbit:
+            if solver.config.landing:
+                pos_vel = solver.sols[idx][0].X[0][1:7]
+            else:
+                pos_vel = solver.sols[idx][-1].X[-1][1:7]
+            e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(np.array(pos_vel), solver.body.mu)
+            fig = plot_orbit(fig, e, a, i, ω, Ω, solver.body.mu)
+
+        if colorscale == 'vel':
+            cmin = min([np.min(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.sols[idx]])
+            cmax = max([np.max(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.sols[idx]])
+        elif colorscale == 'f':
+            cmin = 0
+            cmax = 1
+        else:
+            cmin = 0
+            cmax = 1
+
         for k in range(0, solver.nstages):
             sol = solver.sols[idx][k]
             fig = plot_trajectory(fig, 
-                                  np.array(sol.X)[:, 1:], 
-                                  np.array(sol.U), 
-                                  ctrl_markers=ctrl_markers, 
-                                  use_color= not ctrl_colorscale,
-                                  color=stage_colors[k%len(stage_colors)])
+                                  np.array(sol.X)[:, 1:4],
+                                  np.array(sol.X)[:, 4:7],
+                                #   np.array(sol.X)[:, 7:10],
+                                  np.array(sol.U),
+                                  markers=markers, 
+                                  colorscale = colorscale,
+                                  color=stage_colors[k%len(stage_colors)],
+                                  cmin=cmin,
+                                  cmax=cmax)
+            
     if show_stars:
         fig = add_background_stars(fig)
+
     return fig

@@ -43,62 +43,6 @@ def load_json(filename):
         raise ValueError(f"Failed to load defaults from {file_path}: {e}")
     return json_dict
 
-def _old_change_basis(states, controls, old_basis, new_basis):
-    """Converts state(s) and control(s) between Cartesian and spherical bases."""
-    if old_basis == new_basis:
-        return states, controls
-
-    dim = states.ndim
-    if dim == 1:
-        states = np.array([states])
-        controls = np.array([controls])
-
-    new_states = np.empty_like(states, dtype=float)
-    new_controls = np.empty_like(controls, dtype=float)
-    if old_basis == "cart":
-        for i, (state, control) in enumerate(zip(states, controls)):
-            x, y, z, vx, vy, vz = state
-            r = np.sqrt(x**2 + y**2 + z**2)
-            theta = np.arccos(z/r)
-            phi = np.arctan2(y, x)
-            er = np.array([np.sin(theta)*np.cos(phi), np.sin(theta)*np.sin(phi), np.cos(theta)])
-            etheta = np.array([np.cos(theta)*np.cos(phi), np.cos(theta)*np.sin(phi), -np.sin(theta)])
-            ephi = np.array([-np.sin(phi), np.cos(phi), 0])
-            vel = np.array([vx, vy, vz])
-            v_r = np.dot(vel, er)
-            v_theta = np.dot(vel, etheta)
-            v_phi = np.dot(vel, ephi)
-            new_states[i] = np.array([r, theta, phi, v_r, v_theta/r, v_phi/(r*np.sin(theta))])
-
-            fx, fy, fz = control
-            f = np.sqrt(fx**2 + fy**2 + fz**2)
-            beta = np.arccos(np.dot(er, control)/f)
-            control_planar = control - np.dot(er, control)*er
-            gamma = np.arctan2(np.dot(np.cross(ephi, control_planar), er), np.dot(ephi, control_planar))
-            new_controls[i] = np.array([f, gamma, beta])
-            
-    elif old_basis == "sph":
-        for i, (state, control) in enumerate(zip(states, controls)):
-            r, theta, phi, v_r, omega, psi = state
-            v_theta = r*omega
-            v_phi = r*np.sin(theta)*psi
-            x = r*np.sin(theta)*np.cos(phi)
-            y = r*np.sin(theta)*np.sin(phi)
-            z = r*np.cos(theta)
-            er = np.array([np.sin(theta)*np.cos(phi), np.sin(theta)*np.sin(phi), np.cos(theta)])
-            etheta = np.array([np.cos(theta)*np.cos(phi), np.cos(theta)*np.sin(phi), -np.sin(theta)])
-            ephi = np.array([-np.sin(phi), np.cos(phi), 0])
-            vel = v_r*er + v_theta*etheta + v_phi*ephi
-            new_states[i] = np.array([x, y, z, vel[0], vel[1], vel[2]])
-
-            f, gamma, beta = control
-            new_controls[i] = f*np.cos(beta)*er -f*np.sin(beta)*np.sin(gamma)*etheta + f*np.sin(beta)*np.cos(gamma)*ephi
-
-    if dim == 1:
-        return new_states[0], new_controls[0]
-    else:
-        return new_states, new_controls
-
 def change_basis(states, controls, old_basis, new_basis):
     """Converts state(s) and control(s) between Cartesian and spherical bases.
     
@@ -226,7 +170,7 @@ def kep_to_state(e, a, i, ω, Ω, ν, μ):
     """Converts Keplerian elements to Cartesian state vector."""
     r = a * (1 - e**2) / (1 + e * np.cos(ν))
     p = a * (1 - e**2)
-    
+
     r_p = np.array([r * np.cos(ν), r * np.sin(ν), 0])
     
     v_p = np.array([
@@ -287,7 +231,7 @@ def state_to_kep(state_vec, μ):
         ν = np.arctan2(np.dot(np.cross(e_vec, r_vec), h_vec/h), np.dot(e_vec, r_vec))
     return e, a, i, ω, Ω, ν, h_vec, e_vec
 
-def sym_state_to_he(state_vec, μ):
+def sym_state_to_he(state_vec, μ): # Depreciated no longer used
     """Converts CasADi symbolic Cartesian state vector to h and e vectors."""
     r, θ, ϕ = state_vec[0], state_vec[1], state_vec[2]
     vr, ω, ψ = state_vec[3], state_vec[4], state_vec[5]

@@ -8,3 +8,6 @@
 __pycache__/
 *.mtx
 *.casadi
+*.c
+*.so
+pyoptflight.egg-info/

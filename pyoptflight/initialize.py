@@ -8,10 +8,10 @@ import time
 def _fix_states(solver: Solver, npoints=250, sep_angle=np.pi/2):
     npoints = 250 if npoints is None else npoints
     sep_angle = np.pi/2 if sep_angle is None else sep_angle
-    x0_data = solver.x0.get_x_range(solver.config, solver.body, npoints)
-    xf_data = solver.xf.get_x_range(solver.config, solver.body, npoints)
-    x0_points = change_basis(x0_data['x'], None, "sph", "cart")[:, 0:3]
-    xf_points = change_basis(xf_data['x'], None, "sph", "cart")[:, 0:3]
+    x0_data = solver.x0.get_x0s(solver, npoints)
+    xf_data = solver.xf.get_x0s(solver, npoints)
+    x0_points = x0_data['pos']
+    xf_points = xf_data['pos']
     x0_axis = x0_data['axis']
     xf_axis = xf_data['axis']
     # print(xf_axis)
@@ -38,14 +38,19 @@ def _fix_states(solver: Solver, npoints=250, sep_angle=np.pi/2):
     min_ij = np.unravel_index(np.argmin(cost_table, axis=None), cost_table.shape)
     print(f'The minimum cost is {cost_table[min_ij]} rad')
     ### TODO: Implement some sort of preference when there are infinite solutions. Periapsis?
-    return x0_data['x'][min_ij[0]], xf_data['x'][min_ij[1]], x0_axis, xf_axis
+    return {'x0': {'pos': x0_data['pos'][min_ij[0]],
+                   'vel': x0_data['vel'][min_ij[0]],
+                   'ctrl': x0_data['ctrl'][min_ij[0]],
+                   'axis': x0_data['axis']},
+            'xf': {'pos': xf_data['pos'][min_ij[1]],
+                   'vel': xf_data['vel'][min_ij[1]],
+                   'ctrl': xf_data['ctrl'][min_ij[1]],
+                   'axis': xf_data['axis']}}
 
 def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
     ### WHERE get_pos(t, p0, p1, v0, v1)
 
-    x0s, xfs, _, _ = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle'))
-    x0c = change_basis(x0s, None, 'sph', 'cart')
-    xfc = change_basis(xfs, None, 'sph', 'cart')
+    x_data = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle'))
 
     ### PREP ###
     spacing = opts.get('spacing', 'T_init')
@@ -60,8 +65,8 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
     else:
         raise Exception(f"Spacing {spacing} does not exist. Choose from 'equal', 'dV', or T_init (default).")
     
-    p0, p1 = x0c[0:3], xfc[0:3]
-    v0, v1 = x0c[3:6], xfc[3:6]
+    p0, p1 = x_data['x0']['pos'], x_data['xf']['pos']
+    v0, v1 = x_data['x0']['vel'], x_data['xf']['vel']
     v0_mag, v1_mag = np.linalg.norm(v0), np.linalg.norm(v1)
 
     ts = np.linspace(0, 1, 1000)
@@ -92,6 +97,8 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
         # Linearly interpolate the velocity magnitudes for each point.
         seg_vel_mags = (1 - seg_t) * v0_mag + seg_t * v1_mag
         
+        seg_f = (1 - seg_t) * x_data['x0']['ctrl'][0] + seg_t * x_data['xf']['ctrl'][0]
+
         seg_velocities = []
         seg_controls = []
         # Compute the velocity (and control) at each point from the finite-difference tangent.
@@ -106,25 +113,32 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
             
             # Compute a control vector (example: scaled version of the negative/positive direction).
             if solver.config.landing:
-                ctrl = -0.5 * dir
+                ctrl_dir = -dir
             else:
-                ctrl = 0.5 * dir
-            seg_controls.append(ctrl)
+                ctrl_dir = dir
+            psi = np.arctan2(ctrl_dir[1], ctrl_dir[0])
+            theta = np.arccos(ctrl_dir[2]) - np.pi/2
+            seg_controls.append(np.array([seg_f[j], psi, theta]))
         
         # Compute the mass at each point by linear interpolation between the stage's initial and final masses.
         seg_masses = []
         for t_lin in np.linspace(0, 1, solver.N[k] + 1):
             seg_masses.append((1 - t_lin) * stage.m_0 + t_lin * stage.m_f)
 
-        seg_velocities  = np.array(seg_velocities)
-        seg_controls = np.array(seg_controls)
-        seg_masses = np.array(seg_masses)
         seg_time = np.linspace(0, seg_times[k], solver.N[k]+1)
 
-        x, u = change_basis(np.hstack((seg_positions, seg_velocities)), seg_controls, "cart", "sph")
+        # Compute the control rates 
+        seg_control_rates = []
+        for j, dt in enumerate(seg_time[1:] - seg_time[:-1]):
+            seg_control_rates.append((seg_controls[j+1] - seg_controls[j])/dt)
 
-        sol = Solution(X=np.hstack((np.vstack(seg_masses), x)).tolist(),
-                       U=u[:-1].tolist(),
+        seg_velocities  = np.array(seg_velocities)
+        seg_controls = np.array(seg_controls)
+        seg_control_rates = np.array(seg_control_rates)
+        seg_masses = np.array(seg_masses)
+
+        sol = Solution(X=np.block([np.vstack(seg_masses), seg_positions, seg_velocities, seg_controls]).tolist(),
+                       U=seg_control_rates.tolist(),
                        stage=k+1,
                        t=seg_time.tolist(), 
                        )
@@ -132,7 +146,6 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
     return sols
 
 def linear_interpolation(solver: Solver, opts: dict = {}):
-    start_time = time.time()
     def get_pos(t, p0, p1, v0, v1):
         r0, r1 = np.linalg.norm(p0), np.linalg.norm(p1)
         r = (1-t)*r0 + t*r1
@@ -167,6 +180,8 @@ def cubic_bezier_spline(solver: Solver, opts: dict = {}):
     return {'sols': sols, 'status': None, 'success': True, 'iter_count': 0}
 
 def gravity_turn(solver: Solver, opts: dict = {}):
+    def rotate(vec, axis, angle):
+        return vec*np.cos(angle) + np.cross(axis, vec)*np.sin(angle) + axis*np.dot(axis, vec)*(1 - np.cos(angle))
     if solver.config.landing:
         raise NotImplementedError("Landing not possible with this method.")
 
@@ -176,31 +191,32 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     ### MULTISTAGE SETUP
     ### DETERMINE FIXED STATES GUESS ###
-    x0s, xfs, x0_axis, xf_axis = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle')) # Init
-    x0c = change_basis(x0s, None, "sph", "cart") # To cartesian 
-    xfc = change_basis(xfs, None, "sph", "cart") # To cartesian
-    rot_angle = np.arccos(np.dot(xf_axis, x0c[0:3])/x0s[0]) # Angle between xf plane normal an x0
-    Yp = np.cross(xf_axis, x0c[0:3]) # Axis normal to x0 and xf
+    x_data = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle')) # Init
+    x0_pos, x0_vel, x0_ctrl, x0_axis = x_data['x0']['pos'], x_data['x0']['vel'], x_data['x0']['ctrl'], x_data['x0']['axis']
+    xf_pos, xf_vel, xf_ctrl, xf_axis = x_data['xf']['pos'], x_data['xf']['vel'], x_data['xf']['ctrl'], x_data['xf']['axis']
+    rot_angle = np.arccos(np.dot(xf_axis, x0_pos)/np.linalg.norm(x0_pos)) # Angle between xf plane normal an x0
+    Yp = np.cross(xf_axis, x0_pos) # Axis normal to x0 and xf
     Yp = Yp/np.linalg.norm(Yp)
-    x0cr = rotate_trajectory(x0c, None, Yp, np.pi/2 - rot_angle, "cart", "cart") # Rotate x0 into plane of xf
-    Xp = x0cr[0:3]/x0s[0]
+    x0_pos_rot = rotate(vec=x0_pos, axis=Yp, angle=np.pi/2-rot_angle)
+    x0_vel_rot = rotate(vec=x0_vel, axis=Yp, angle=np.pi/2-rot_angle)
+    Xp = x0_pos_rot/np.linalg.norm(x0_pos_rot)
     Zp = xf_axis
     R = np.array([Xp, Yp, Zp])
-    x0cp = np.concatenate((R@(x0cr[0:3]), R@(x0cr[3:6])))
-    xfcp = np.concatenate((R@(xfc[0:3]), R@(xfc[3:6])))
-    x0sp = change_basis(x0cp, None, "cart", "sph")
-    xfsp = change_basis(xfcp, None, "cart", "sph")
+    x0p_pos = R@x0_pos_rot
+    x0p_vel = R@x0_vel_rot
+    xfp_pos = R@xf_pos
+    xfp_vel = R@xf_vel
 
     ### COMPUTE INTIALS FOR GTRUN SOLVER ###
-    v_init = np.linalg.norm(x0cp[3:6])
+    v_init = np.linalg.norm(x0p_vel)
     beta_init = 0.05*ca.pi
-    h_init = x0sp[0] - solver.body.r_0
-    phi_init = x0sp[2]
+    h_init = np.linalg.norm(x0p_pos) - solver.body.r_0
+    phi_init = np.arctan2(x0p_pos[1], x0p_pos[0])
 
-    v_T = np.linalg.norm(xfcp[3:6])
-    beta_T = np.arccos(np.dot(xfcp[0:3], xfcp[3:6])/(xfsp[0]*v_init))
-    h_T = xfsp[0] - solver.body.r_0
-    phi_T = xfsp[2]
+    v_T = np.linalg.norm(xfp_vel)
+    beta_T = np.arccos(np.dot(xfp_pos, xfp_vel)/(np.linalg.norm(xfp_pos)*np.linalg.norm(xfp_vel)))
+    h_T = np.linalg.norm(xfp_pos) - solver.body.r_0
+    phi_T = np.arctan2(xfp_pos[1], xfp_pos[0])
     
     #######################
     ### SETUP SYMBOLICS ###
@@ -322,7 +338,6 @@ def gravity_turn(solver: Solver, opts: dict = {}):
     ### Create optimization func ###
     # Maximize remaining mass of last stage normalized by mass of last stage
     opt_func = (solver.stages[-1].m_0 - X[-1][-1][0])/(solver.stages[-1].m_0 - solver.stages[-1].m_f)
-    # opt_func = (solver.stages[0].m_0 - X[-1][-1][0])/(solver.stages[0].m_0 - solver.stages[-1].m_f)
 
     #############
     ### SOLVE ###
@@ -345,48 +360,38 @@ def gravity_turn(solver: Solver, opts: dict = {}):
     u_res = np.array(V_res[npar : npar + solver.Nu*nu]).reshape((solver.Nu, nu)) # (Nu, nu)
     x_res = np.array(V_res[npar + solver.Nu*nu : ]).reshape((solver.Nx, nx)) # (Nx, nx)
 
-    # for k in range(0, nstages):
-    #     ### SAVE RESULTS IN SOL OBJS SO THEY CAN BE ACCESSED IN NEXT ITER ###
-    #     sol = Solution(X=x_res[k*(solver.config.N+1) : (k+1)*(solver.config.N+1)].tolist(),
-    #         U=u_res[k*solver.config.N : (k+1)*solver.config.N].tolist(),
-    #         stage=k+1, 
-    #         t=np.linspace(0, T_res[k], solver.config.N+1).tolist(),
-    #         status=nlpsolver.stats()['return_status'],
-    #         limits={},
-    #         soltype='inter')
-
-    #     sols.append(sol)
-
     #########################
     ### PREPARE SOLUTIONS ###
     #########################
-
+    #  0, 1, 2,    3, 4
+    # [m, v, beta, h, phi]
     # Extend u_res by one at each stage inerface to be same length as x_res
-    u_res = np.insert(u_res, np.cumsum(solver.N), np.ones((nu)), axis=0)
+    ins_idx = np.cumsum(solver.N)
+    ins_vals = np.vstack((u_res[ins_idx[:-1]], u_res[-1]))
+    u_res = np.insert(u_res, ins_idx, ins_vals, axis=0) # u_res should now be size (sum(N+1), nu)
 
-    xsp = np.array([
-        x_res[:, 3] + solver.body.r_0,
-        np.full((solver.Nx), np.pi/2),
-        x_res[:, 4],
-        x_res[:, 1]*np.cos(x_res[:, 2]),
-        np.zeros((solver.Nx)),
-        x_res[:, 1]*np.sin(x_res[:, 2])/(x_res[:, 3] + solver.body.r_0),
-    ]).T
-    ctrlsp = np.array([
-        u_res.flatten(),
-        np.zeros_like(u_res.flatten()),
-        x_res[:, 2]
-    ]).T
+    xp_r = x_res[:, 3] + solver.body.r_0
+    xp_theta = np.full((solver.Nx), np.pi/2)
+    xp_phi = x_res[:, 4]
+    R_sph = np.array([
+        [np.sin(xp_theta) * np.cos(xp_phi), np.sin(xp_theta) * np.sin(xp_phi), np.cos(xp_theta)],  # er
+        [np.cos(xp_theta) * np.cos(xp_phi), np.cos(xp_theta) * np.sin(xp_phi), -np.sin(xp_theta)], # etheta
+        [-np.sin(xp_phi), np.cos(xp_phi), np.zeros(solver.Nx)]                                   # ephi
+    ]) # shape is (3, 3, Nx)
+
+    R_sph = np.moveaxis(R_sph, -1, 0) # shape should now be (Nx, 3, 3)
+
+    xp_pos = R_sph[:, 0]*xp_r[:, np.newaxis]
+
+    xp_beta = x_res[:, 2]
+    xp_vmag = x_res[:, 1]
+    xp_vsph = np.array([xp_vmag*np.cos(xp_beta), np.zeros(solver.Nx), xp_vmag*np.sin(xp_beta)]).T
+    R_sph_T = np.transpose(R_sph, axes=(0, 2, 1))
+    xp_vel = np.matmul(R_sph_T, xp_vsph[..., np.newaxis]).squeeze(-1)    
 
     ### NOW GO BACK ###
-    xcp, ctrlcp = change_basis(xsp, ctrlsp, "sph", "cart")
-    xc = np.empty_like(xcp)
-    ctrlc = np.empty_like(ctrlcp)
-    for k, (state, control) in enumerate(zip(xcp, ctrlcp)):
-        xc[k] = np.concatenate((R.T @ (state[0:3]), R.T @ (state[3:6])))
-        ctrlc[k] = R.T @ control
-
-    x_sol, u_sol = change_basis(xc, ctrlc, "cart", "sph")
+    x_pos = (R.T @ xp_pos.T).T
+    x_vel = (R.T @ xp_vel.T).T
 
     # Skew if requested
     if opts.get('skew', False):
@@ -394,19 +399,27 @@ def gravity_turn(solver: Solver, opts: dict = {}):
         for i in range(0, solver.Nx):
             # Calculate rot_angle based on phi of 2D solution
             angle = (rot_angle-np.pi/2)*(1-(x_res[i, 4] - x_res[0, 4])/(x_res[-1, 4] - x_res[0, 4]))**opts.get('skew_strength', 5)
-            x_sol[i], u_sol[i] = rotate_trajectory(x_sol[i], u_sol[i], Yp, angle)
+            x_pos[i] = rotate(vec=x_pos[i], axis=Yp, angle=angle)
+            x_vel[i] = rotate(vec=x_vel[i], axis=Yp, angle=angle)
+
+    x_ctrl = np.array([u_res.flatten(), np.arctan2(x_vel[:, 1], x_vel[:, 0]), np.arcsin(-x_vel[:, 2]/xp_vmag)]).T
 
     sols = []
     for k in range(0, solver.nstages):
-        m = x_res[sum(solver.N[0:k]) + k: sum(solver.N[0:k+1]) + k+1, 0]
-        states = x_sol[sum(solver.N[0:k]) + k: sum(solver.N[0:k+1]) + k+1]
-        ctrls = u_sol[sum(solver.N[0:k]) + k: sum(solver.N[0:k+1]) + k]
+        block_start = sum(solver.N[0:k]) + k 
+        block_end = sum(solver.N[0:k+1]) + k+1
+        m = x_res[block_start : block_end, 0]
+        pos = x_pos[block_start: block_end]
+        vel = x_vel[block_start: block_end]
+        ctrl = x_ctrl[block_start: block_end]
+        t, dt = np.linspace(0, T_res[k], solver.N[k]+1, retstep=True)
+        ctrl_rate = (ctrl[1:] - ctrl[:-1])/dt
 
         sols.append(
-            Solution(X=np.hstack((m.reshape(-1, 1), states)).tolist(),
-                U=ctrls.tolist(),
+            Solution(X=np.block([m[:, np.newaxis], pos, vel, ctrl]).tolist(),
+                U=ctrl_rate.tolist(),
                 stage=k+1, 
-                t=np.linspace(0, T_res[k], solver.N[k]+1).tolist(),
+                t=t.tolist(),
                 )
             )
     return {'sols': sols, 
