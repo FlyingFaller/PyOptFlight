@@ -2,6 +2,7 @@ import json
 import casadi as ca
 import numpy as np
 import os
+from typing import Any
 
 class AutoRepr:
     """Automatically generates a string representation of the object."""
@@ -30,7 +31,7 @@ class AutoRepr:
 
         return f"{class_name}(\n{attributes_str}\n{single_indent})"
 
-def load_json(filename):
+def load_json(filename: str) -> dict[str, Any]:
     """Loads a JSON file and returns a dictionary."""
     base_dir = os.path.dirname(__file__)
     file_path = os.path.join(base_dir, filename)
@@ -166,7 +167,7 @@ def rotate_trajectory(states, controls, axis, angle, old_basis='sph', new_basis=
             new_controls = new_controls[0]
     return new_states if controls is None else (new_states, new_controls)
 
-def kep_to_state(e, a, i, ω, Ω, ν, μ):
+def kep_to_state(e: float, a: float, i: float, ω: float, Ω: float, ν: float, μ:float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Converts Keplerian elements to Cartesian state vector."""
     r = a * (1 - e**2) / (1 + e * np.cos(ν))
     p = a * (1 - e**2)
@@ -197,7 +198,7 @@ def kep_to_state(e, a, i, ω, Ω, ν, μ):
 
     return np.concatenate([r_vec, v_vec]), h_vec, e_vec
 
-def state_to_kep(state_vec, μ):
+def state_to_kep(state_vec: np.ndarray, μ: float) -> tuple[float, float, float, float, float, float, np.ndarray, np.ndarray]:
     """Converts Cartesian state vector to Keplerian elements."""
     r_vec = state_vec[0:3]
     r = np.linalg.norm(r_vec)
