@@ -40,11 +40,9 @@ def _fix_states(solver: Solver, npoints=250, sep_angle=np.pi/2):
     ### TODO: Implement some sort of preference when there are infinite solutions. Periapsis?
     return {'x0': {'pos': x0_data['pos'][min_ij[0]],
                    'vel': x0_data['vel'][min_ij[0]],
-                   'ctrl': x0_data['ctrl'][min_ij[0]],
                    'axis': x0_data['axis']},
             'xf': {'pos': xf_data['pos'][min_ij[1]],
                    'vel': xf_data['vel'][min_ij[1]],
-                   'ctrl': xf_data['ctrl'][min_ij[1]],
                    'axis': xf_data['axis']}}
 
 def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
@@ -127,18 +125,12 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
 
         seg_time = np.linspace(0, seg_times[k], solver.N[k]+1)
 
-        # Compute the control rates 
-        seg_control_rates = []
-        for j, dt in enumerate(seg_time[1:] - seg_time[:-1]):
-            seg_control_rates.append((seg_controls[j+1] - seg_controls[j])/dt)
-
         seg_velocities  = np.array(seg_velocities)
         seg_controls = np.array(seg_controls)
-        seg_control_rates = np.array(seg_control_rates)
         seg_masses = np.array(seg_masses)
 
-        sol = Solution(X=np.block([np.vstack(seg_masses), seg_positions, seg_velocities, seg_controls]).tolist(),
-                       U=seg_control_rates.tolist(),
+        sol = Solution(X=np.block([np.vstack(seg_masses), seg_positions, seg_velocities]).tolist(),
+                       U=seg_controls.tolist(),
                        stage=k+1,
                        t=seg_time.tolist(), 
                        )
@@ -192,8 +184,8 @@ def gravity_turn(solver: Solver, opts: dict = {}):
     ### MULTISTAGE SETUP
     ### DETERMINE FIXED STATES GUESS ###
     x_data = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle')) # Init
-    x0_pos, x0_vel, x0_ctrl, x0_axis = x_data['x0']['pos'], x_data['x0']['vel'], x_data['x0']['ctrl'], x_data['x0']['axis']
-    xf_pos, xf_vel, xf_ctrl, xf_axis = x_data['xf']['pos'], x_data['xf']['vel'], x_data['xf']['ctrl'], x_data['xf']['axis']
+    x0_pos, x0_vel, x0_axis = x_data['x0']['pos'], x_data['x0']['vel'], x_data['x0']['axis']
+    xf_pos, xf_vel, xf_axis = x_data['xf']['pos'], x_data['xf']['vel'], x_data['xf']['axis']
     rot_angle = np.arccos(np.dot(xf_axis, x0_pos)/np.linalg.norm(x0_pos)) # Angle between xf plane normal an x0
     Yp = np.cross(xf_axis, x0_pos) # Axis normal to x0 and xf
     Yp = Yp/np.linalg.norm(Yp)
@@ -413,11 +405,10 @@ def gravity_turn(solver: Solver, opts: dict = {}):
         vel = x_vel[block_start: block_end]
         ctrl = x_ctrl[block_start: block_end]
         t, dt = np.linspace(0, T_res[k], solver.N[k]+1, retstep=True)
-        ctrl_rate = (ctrl[1:] - ctrl[:-1])/dt
 
         sols.append(
-            Solution(X=np.block([m[:, np.newaxis], pos, vel, ctrl]).tolist(),
-                U=ctrl_rate.tolist(),
+            Solution(X=np.block([m[:, np.newaxis], pos, vel]).tolist(),
+                U=ctrl.tolist(),
                 stage=k+1, 
                 t=t.tolist(),
                 )
