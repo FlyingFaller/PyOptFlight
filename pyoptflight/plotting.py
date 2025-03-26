@@ -169,7 +169,7 @@ def plot_trajectory(fig, pos, vel, ctrl,
     # Periodically add arrow vectors along the trajectory
     if markers is not None:
         num_steps = max(2, round(N/freq)+1)
-        for i in np.linspace(0, N - 1, num_steps, dtype=int):
+        for i in np.linspace(0, N - 2, num_steps, dtype=int):
             if markers == 'ctrl':
                 mkr_dir = np.array([
                     np.cos(psi[i])*np.cos(theta[i]),
