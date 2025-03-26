@@ -334,7 +334,7 @@ class KeplerianBound(BoundaryObj):
                 # 'ctrl': np.atleast_2d(ctrls), 
                 'axis': h/np.linalg.norm(h)}
     
-    def get_ge(self, Xi, T, solver: "Solver") -> Dict:
+    def get_ge(self, Xi, Ui, T_sum, solver: "Solver") -> Dict:
         if self.ν is not None:
             return {"g": [], "e": []}
         else:
