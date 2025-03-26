@@ -733,9 +733,10 @@ class Solver(AutoRepr):
                 # gap closing
                 if i+1 == N and k+1 < self.nstages: # if last node of booster stage
                     # stage i+1 mass plus stage i empty mass must equal integration of stage i mass flow
-                    m_e = self.stages[k+1].m_0 - self.stages[k].m_f # stage empty mass
+                    m_e = self.stages[k].m_f - self.stages[k+1].m_0 # stage empty mass
                     G.append(X[k][i+1][0] + m_e - F_int(X[k][i], U[k][i], T[k]/N)[0])
                     G.append(X[k][i+1][1:] - F_int(X[k][i], U[k][i], T[k]/N)[1:])
+
                 else:
                     G.append(X[k][i+1] - F_int(X[k][i], U[k][i], T[k]/N))
 
@@ -767,4 +768,113 @@ class Solver(AutoRepr):
         self.nlp_creation_time = time.time() - start_time        
 
     def solve_nlp(self) -> None:
-        pass
+        start_time = time.time()
+        if self.nlpsolver is None:
+            raise Exception('NLP Solver must be created with create_nlp()')
+        elif not self.initialized:
+            raise Exception('Solver must be initialized with a guess solution.')
+        
+        nx = 7
+        nu = 3
+        x0, lbx, ubx, lbg, ubg = [], [], [], [], []
+
+        # create x0
+        x0 += self.T_init
+        for k in range(self.nstages):
+            for i in range(self.N[k]):
+                x0 += self.sols[-1][k].X[i] + self.sols[-1][k].U[i]
+        x0 += self.sols[-1][-1].X[-1]
+
+        # create lbg ubg
+        for k in range(self.nstages):
+            for i in range(self.N[k]):
+                # gap closing:
+                lbg += nx*[0]
+                ubg += nx*[0]
+
+                if i == 0 and k == 0:
+                    # initial constraints
+                    gb_0 = self.x0.get_gb(self)
+                    lbg += gb_0['lbg']
+                    ubg += gb_0['ubg']
+                else:
+                    # radius constraint
+                    lbg.append(0)
+                    ubg.append(ca.inf)
+
+        # final constraint
+        gb_f = self.xf.get_gb(self)
+        lbg += gb_f['lbg']
+        ubg += gb_f['ubg']
+
+        # create lbx ubx
+        free_bound = FreeBound()
+        xb_free = free_bound.get_xb(self)
+        ub_free = free_bound.get_ub(self)
+        lbx += self.T_min
+        ubx += self.T_max
+        for k, stage in enumerate(self.stages):
+            N = self.N[k]
+            m_0 = stage.m_0
+            m_f = stage.m_f
+            
+            # bounds on first node
+            if k == 0:
+                xb_0 = self.x0.get_xb(self)
+                ub_0 = self.x0.get_ub(self)
+                lbx += [m_0] + xb_0['lbx'] + ub_0['lbu']
+                ubx += [m_0] + xb_0['ubx'] + ub_0['ubu']
+            else:
+                lbx += [m_0] + xb_free['lbx'] + ub_free['lbu']
+                ubx += [m_0] + xb_free['ubx'] + ub_free['ubu']
+
+            # bounds on next N-1 nodes (N total at this point)
+            if k + 1 < self.nstages: # if not last stage
+                lbx += (N-1)*([m_f] + xb_free['lbx'] + ub_free['lbu'])
+                ubx += (N-1)*([m_0] + xb_free['ubx'] + ub_free['ubu'])
+            else: # Last stage gets extra xb and special ub 
+                lbx += (N-2)*([m_f] + xb_free['lbx'] + ub_free['lbu'])
+                ubx += (N-2)*([m_0] + xb_free['ubx'] + ub_free['ubu'])
+
+                # final constrait
+                xb_f = self.xf.get_xb(self)
+                ub_f = self.xf.get_ub(self)
+                lbx += [m_f] + xb_free['lbx'] + ub_f['lbu'] + [m_f] + xb_f['lbx']
+                ubx += [m_0] + xb_free['ubx'] + ub_f['ubu'] + [m_0] + xb_f['ubx']
+
+        # SOLVE #
+        result = self.nlpsolver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+
+        # # PARSE RESULTS #
+        intersols = []
+        V_res = np.array(result['x']).flatten()
+        block_bounds = np.concatenate(([0], (nx+nu)*np.cumsum(self.N))) + self.nstages
+        for k in range(self.nstages):
+            N = self.N[k]
+            Vk = V_res[block_bounds[k] : block_bounds[k+1] + nx]
+            t_res = np.linspace(0, V_res[k], N + 1)
+            Uk = np.array([Vk[(nx+nu)*i + nx : (nx+nu)*(i+1)] for i in range(N)])
+            Xk = np.array([Vk[(nx+nu)*i: (nx+nu)*(i+1) - nu] for i in range(N + 1)])
+
+            # add back in structural mass at end of stage
+            if k + 1 < self.nstages:
+                m_e = self.stages[k].m_f - self.stages[k+1].m_0 # stage empty mass
+                Xk[-1][0] += m_e
+
+            sol = Solution(
+                X=Xk.tolist(),
+                U=Uk.tolist(),
+                stage=k+1,
+                t=t_res.tolist(),
+                )
+            intersols.append(sol)
+        self.sols.append(intersols)
+
+        ### UPDATE STATS ###
+        self.status = self.nlpsolver.stats()['return_status']
+        self.success = self.status == 'Solve_Succeeded'
+        self.iter_count = self.nlpsolver.stats()['iter_count']
+        self.T_init = [sol.t[-1] for sol in self.sols[-1]]
+        self.T = sum(self.T_init)
+        self.nsolves = len(self.sols)
+        self.runtime = time.time() - start_time
