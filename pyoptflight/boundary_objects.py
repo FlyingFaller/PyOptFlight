@@ -139,14 +139,15 @@ class LatLngBound(BoundaryObj):
             g.append((-vx_rel*x - vy_rel*y) - self.vel*np.cos(np.deg2rad(self.lat))*ca.sqrt(x**2+y**2))
             e += [True, True]
 
-        # constrain on attitude direction
-        psi, theta = Ui[1], Ui[2]
-        atti_x = ca.cos(theta)*ca.cos(psi)
-        atti_y = ca.cos(theta)*ca.sin(psi)
-        atti_z = -ca.sin(theta)
-        r = ca.sqrt(x**2 + y**2 + z**2)
-        g.append(x*atti_x + y*atti_y + z*atti_z - r)
-        e.append(True)
+        if solver.config.landing or self.ERA0 is None:
+            # constrain on attitude direction
+            psi, theta = Ui[1], Ui[2]
+            atti_x = ca.cos(theta)*ca.cos(psi)
+            atti_y = ca.cos(theta)*ca.sin(psi)
+            atti_z = -ca.sin(theta)
+            r = ca.sqrt(x**2 + y**2 + z**2)
+            g.append(x*atti_x + y*atti_y + z*atti_z - r)
+            e.append(True)
 
         return {"g": g, "e": e}
     
@@ -213,7 +214,19 @@ class LatLngBound(BoundaryObj):
         }
     
     def get_ub(self, solver: "Solver"):
-        return FreeBound.get_ub(self, solver)
+        free_bound = FreeBound.get_ub(self, solver)
+        if solver.config.landing or self.ERA0 is None:
+            return free_bound
+        else:
+            ubf = free_bound['ubu'][0]
+            lbf = free_bound['lbu'][0]
+            theta = -np.deg2rad(self.lat)
+            psi = (self.ERA0 + np.deg2rad(self.lng) + np.pi)%(2*np.pi) - np.pi
+            ubu = [ubf, psi, theta]
+            lbu = [lbf, psi, theta]
+            return {'ubu': ubu, 'lbu': lbu}
+            
+
     
 class StateBound(BoundaryObj):
     def __init__(self, **kwargs) -> None:
@@ -277,8 +290,8 @@ class StateBound(BoundaryObj):
             atti_min = self.atti if self.atti is not None else udict['lbu'][1:]
             f_max = self.f if self.f is not None else udict['ubu'][0]
             atti_max = self.atti if self.atti is not None else udict['ubu'][1:]
-        return {'ubu': f_max + atti_max,
-                'lbu': f_min + atti_min}
+        return {'ubu': [f_max] + atti_max,
+                'lbu': [f_min] + atti_min}
     
 class KeplerianBound(BoundaryObj):
     """
