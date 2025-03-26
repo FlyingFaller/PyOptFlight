@@ -4,6 +4,7 @@ from sklearn.cluster import KMeans
 from sklearn.utils import shuffle
 import skimage.io as sio
 import plotly.graph_objs as go
+import matplotlib.pyplot as plt
 from skimage.transform import resize
 from .functions import *
 import os
@@ -499,5 +500,34 @@ def plot_solutions(solver: Solver,
             
     if show_stars:
         fig = add_background_stars(fig)
+
+    return fig
+
+def plot_controls(solver: Solver, indices=[-1]):
+    fig, ax = plt.subplots(figsize=(8, 5))
+    plt.ion()
+    for idx in indices:
+        sol_set = solver.sols[idx]
+        t_offset = 0
+        t_full = np.zeros(1)
+        u_full = []
+        for k, sol in enumerate(sol_set):
+            t = np.array(sol.t[1:]) + t_offset
+            t_full = np.concatenate((t_full, t))
+            t_offset += sol.t[-1]
+            u_full += sol.U
+            if k + 1 < solver.nstages:
+                ax.axvline(t_offset, color='gray', linestyle='--')
+
+    u_full = np.array(u_full)
+    ax.plot(t_full[:-1], u_full[:, 0], label='$f$')
+    ax.plot(t_full[:-1], u_full[:, 1], label='$\\psi$')
+    ax.plot(t_full[:-1], u_full[:, 2], label='$\\theta$')
+
+    ax.set_xlabel('Time [s]')
+    ax.set_ylabel('Throttle %, Angle [rad]')
+    ax.set_title('Control vs Time')
+    ax.legend()
+    ax.grid(True)
 
     return fig
