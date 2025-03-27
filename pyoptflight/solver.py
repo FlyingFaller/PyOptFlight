@@ -673,9 +673,9 @@ class Solver(AutoRepr):
 
             # Supporting Definitions #
             h = ca.sqrt(px**2 + py**2 + pz**2) - self.body.r_0 # Altitude
-            # F_max = stage.prop.F_vac + (stage.prop.F_SL - stage.prop.F_vac)*ca.exp(-h/self.body.atm.H) # Max thrust
-            # F_eff = F_max*f/(1 + ca.exp(-K*(f - f_min))) # Effective thrust
-            F_eff = stage.prop.F_SL*f
+            F_max = stage.prop.F_vac + (stage.prop.F_SL - stage.prop.F_vac)*ca.exp(-h/self.body.atm.H) # Max thrust
+            F_eff = F_max*f/(1 + ca.exp(-K*(f - f_min))) # Effective thrust
+            # F_eff = stage.prop.F_SL*f
             Isp = stage.prop.Isp_vac + (stage.prop.Isp_SL - stage.prop.Isp_vac)*ca.exp(-h/self.body.atm.H) # Isp
             g = -self.body.g_0*self.body.r_0**2*(px**2 + py**2 + pz**2)**(-3/2)*ca.vertcat(px, py, pz) # gravity vector
             rho = self.body.atm.rho_0*ca.exp(-h/self.body.atm.H) # denisty
