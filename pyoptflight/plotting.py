@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from skimage.transform import resize
 from .functions import *
 import os
-from .solver import Solver
+from .solver import Solver, Solution
 from .setup import Body
 from .boundary_objects import *
 from typing import List, Dict
@@ -503,31 +503,117 @@ def plot_solutions(solver: Solver,
 
     return fig
 
-def plot_controls(solver: Solver, indices=[-1]):
+def _get_plot_time(sols: List[Solution]) -> tuple[np.ndarray]:
+    T_cum = 0
+    tu = np.zeros(1)
+    tx = np.array([])
+    for sol in sols:
+        stage_t = np.array(sol.t)
+        tu = np.concatenate((tu, stage_t[1:] + T_cum))
+        tx = np.concatenate((tx, stage_t + T_cum))
+        T_cum += stage_t[-1]
+    tu = np.concatenate(([tu[0]], np.repeat(tu[1:-1], 2), [tu[-1]]))
+    return tu, tx
+
+def _get_plot_data(sols: List[Solution]) -> tuple[np.ndarray]:
+    raw_u = np.vstack([sol.U for sol in sols])
+    u_step = np.repeat(raw_u, 2, axis=0)
+    raw_x = np.vstack([sol.X for sol in sols])
+    return u_step, raw_x
+
+def _get_stage_interfaces(sols: List[Solution]) -> np.ndarray:
+    T_sols = [sol.t[-1] for sol in sols]
+    T_cum = np.cumsum(T_sols)
+    return T_cum[:len(sols)-1]
+
+
+def plot_throttle(solver: Solver, indices=[-1]):
+    """
+    Plot throttle controls: f, effective throttle (f_eff), and the minimum thrust (f_min)
+    over time. Vertical dashed lines indicate stage separations.
+    """
     fig, ax = plt.subplots(figsize=(8, 5))
     plt.ion()
-    for idx in indices:
-        sol_set = solver.sols[idx]
-        t_offset = 0
-        t_full = np.zeros(1)
-        u_full = []
-        for k, sol in enumerate(sol_set):
-            t = np.array(sol.t[1:]) + t_offset
-            t_full = np.concatenate((t_full, t))
-            t_offset += sol.t[-1]
-            u_full += sol.U
-            if k + 1 < solver.nstages:
-                ax.axvline(t_offset, color='gray', linestyle='--')
 
-    u_full = np.array(u_full)
-    ax.plot(t_full[:-1], u_full[:, 0], label='$f$')
-    ax.plot(t_full[:-1], u_full[:, 1], label='$\\psi$')
-    ax.plot(t_full[:-1], u_full[:, 2], label='$\\theta$')
+    for idx in indices:
+        # Stack all control vectors for this solution index
+        u, x = _get_plot_data(solver.sols[idx])
+        tu, tx = _get_plot_time(solver.sols[idx])
+        stage_times = _get_stage_interfaces(solver.sols[idx])
+        f_eff = np.empty(sum(solver.N))
+        fmin_times = np.concatenate(([tu[0]], stage_times, [tu[-1]]))
+        fmin_segments = []
+
+        # Loop over stages
+        for k, sol in enumerate(solver.sols[idx]):
+
+            # Get f_min for this stage; default to 0 if not enabled or not available
+            f_min = solver.constraints[k].f_min.value
+            if f_min is None or not solver.constraints[k].f_min.enabled:
+                f_min = 0
+            fmin_segments.append((fmin_times[k], fmin_times[k+1], f_min))
+
+            # Compute effective throttle using the provided formula
+            K = 100
+            start = sum(solver.N[:k])
+            end = sum(solver.N[:k+1])
+            f = np.array(sol.U)[:, 0]
+            f_eff[start:end] = f / (1 + np.exp(-K * (f - f_min)))
+
+        # Repeat arrays for a "step" plotting effect
+        f_eff = np.repeat(f_eff, 2)
+
+
+        # Plot horizontal lines for f_min per stage
+        for i, (t_start, t_end, f_min) in enumerate(fmin_segments):
+            label = '$f_\\text{min}$' if i == 0 else None
+            ax.hlines(y=f_min, xmin=t_start, xmax=t_end, color='red', linestyle='-.', label=label)
+
+        # Draw vertical dashed lines to separate stages
+        for tl in stage_times:
+            ax.axvline(tl, color='gray', linestyle='--')
+
+        # Plot the raw throttle and effective throttle
+        ax.plot(tu, u[:, 0], label='$f$', linewidth=3)
+        ax.plot(tu, f_eff, label='$f_\\text{eff}$', linestyle=':', linewidth=3)
 
     ax.set_xlabel('Time [s]')
-    ax.set_ylabel('Throttle %, Angle [rad]')
-    ax.set_title('Control vs Time')
+    ax.set_ylabel('Throttle [%]')
+    ax.set_title('Throttle vs Time')
     ax.legend()
     ax.grid(True)
+    fig.tight_layout()
+
+    return fig
+
+
+def plot_attitude(solver : Solver, indices=[-1]):
+    """
+    Plot attitude angles: psi and theta over time. Vertical dashed lines indicate stage separations.
+    """
+    fig, ax = plt.subplots(figsize=(8, 5))
+    plt.ion()
+
+    for idx in indices:
+        # Stack all control vectors for this solution index
+        u, x = _get_plot_data(solver.sols[idx])
+        tu, tx = _get_plot_time(solver.sols[idx])
+        stage_times = _get_stage_interfaces(solver.sols[idx])
+
+        # Draw vertical dashed lines to separate stages
+        for tl in stage_times:
+            ax.axvline(tl, color='gray', linestyle='--')
+
+        # Plot psi and theta
+        ax.plot(tu, u[:, 1], label='$\\psi$', linewidth=3)
+        ax.plot(tu, u[:, 2], label='$\\theta$', linewidth=3)
+
+
+    ax.set_xlabel('Time [s]')
+    ax.set_ylabel('Angle [rad]')
+    ax.set_title('Attitude vs Time')
+    ax.legend()
+    ax.grid(True)
+    fig.tight_layout()
 
     return fig
