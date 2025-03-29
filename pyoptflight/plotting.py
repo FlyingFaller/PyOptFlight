@@ -503,57 +503,48 @@ def plot_solutions(solver: Solver,
 
     return fig
 
-def _get_plot_time(sols: List[Solution]) -> tuple[np.ndarray]:
+# These _functions are kind of clunky someone should do a better job
+def _get_cumulative_times(sols: List[Solution]) -> np.ndarray:
+    T = [sol.t[-1] for sol in sols]
+    T_cum = np.concatenate(([0], np.cumsum(T)))
+    return T_cum
+
+def _stack_time(sols: List[Solution]) -> np.ndarray:
     T_cum = 0
-    tu = np.zeros(1)
-    tx = np.array([])
+    t = np.zeros(1)
     for sol in sols:
         stage_t = np.array(sol.t)
-        tu = np.concatenate((tu, stage_t[1:] + T_cum))
-        tx = np.concatenate((tx, stage_t + T_cum))
+        t = np.concatenate((t, stage_t[1:] + T_cum))
         T_cum += stage_t[-1]
-    tu = np.concatenate(([tu[0]], np.repeat(tu[1:-1], 2), [tu[-1]]))
-    return tu, tx
+    return t
 
-def _get_plot_data(sols: List[Solution]) -> tuple[np.ndarray]:
-    raw_u = np.vstack([sol.U for sol in sols])
-    u_step = np.repeat(raw_u, 2, axis=0)
-    raw_x = np.vstack([sol.X for sol in sols])
-    return u_step, raw_x
-
-def _get_stage_interfaces(sols: List[Solution]) -> np.ndarray:
-    T_sols = [sol.t[-1] for sol in sols]
-    T_cum = np.cumsum(T_sols)
-    return T_cum[:len(sols)-1]
-
+def _stack_data(sols: List[Solution]) -> tuple[np.ndarray]:
+    u = np.vstack([sol.U for sol in sols])
+    x = np.vstack([sol.X for sol in sols])
+    return u, x
 
 def plot_throttle(solver: Solver, indices=[-1]):
     """
     Plot throttle controls: f, effective throttle (f_eff), and the minimum thrust (f_min)
     over time. Vertical dashed lines indicate stage separations.
     """
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(10, 3))
     plt.ion()
 
     for idx in indices:
         # Stack all control vectors for this solution index
-        u, x = _get_plot_data(solver.sols[idx])
-        tu, tx = _get_plot_time(solver.sols[idx])
-        stage_times = _get_stage_interfaces(solver.sols[idx])
+        u, x = _stack_data(solver.sols[idx])
+        u = np.repeat(u, 2, axis=0)
+        t = _stack_time(solver.sols[idx])
+        tu = np.concatenate(([t[0]], np.repeat(t[1:-1], 2), [t[-1]]))
         f_eff = np.empty(sum(solver.N))
-        fmin_times = np.concatenate(([tu[0]], stage_times, [tu[-1]]))
-        fmin_segments = []
+        stage_times = _get_cumulative_times(solver.sols[idx])
 
         # Loop over stages
         for k, sol in enumerate(solver.sols[idx]):
-
-            # Get f_min for this stage; default to 0 if not enabled or not available
-            f_min = solver.constraints[k].f_min.value
-            if f_min is None or not solver.constraints[k].f_min.enabled:
-                f_min = 0
-            fmin_segments.append((fmin_times[k], fmin_times[k+1], f_min))
-
             # Compute effective throttle using the provided formula
+            f_min = solver.constraints[k].f_min.value
+            f_min = 0 if f_min is None or not solver.constraints[k].f_min.enabled else f_min
             K = 100
             start = sum(solver.N[:k])
             end = sum(solver.N[:k+1])
@@ -562,15 +553,16 @@ def plot_throttle(solver: Solver, indices=[-1]):
 
         # Repeat arrays for a "step" plotting effect
         f_eff = np.repeat(f_eff, 2)
-
-
-        # Plot horizontal lines for f_min per stage
-        for i, (t_start, t_end, f_min) in enumerate(fmin_segments):
-            label = '$f_\\text{min}$' if i == 0 else None
-            ax.hlines(y=f_min, xmin=t_start, xmax=t_end, color='red', linestyle='-.', label=label)
+        label_flag = False
+        for k in range(solver.nstages):
+            f_min = solver.constraints[k].f_min.value
+            if solver.constraints[k].f_min.enabled and f_min is not None:
+                label = None if label_flag else '$f_\\text{min}$'
+                ax.hlines(y=f_min, xmin=stage_times[k], xmax=stage_times[k+1], color='red', linestyle='-.', label=label)
+                label_flag = True
 
         # Draw vertical dashed lines to separate stages
-        for tl in stage_times:
+        for tl in stage_times[1:-1]:
             ax.axvline(tl, color='gray', linestyle='--')
 
         # Plot the raw throttle and effective throttle
@@ -591,17 +583,19 @@ def plot_attitude(solver : Solver, indices=[-1]):
     """
     Plot attitude angles: psi and theta over time. Vertical dashed lines indicate stage separations.
     """
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(10, 3))
     plt.ion()
 
     for idx in indices:
         # Stack all control vectors for this solution index
-        u, x = _get_plot_data(solver.sols[idx])
-        tu, tx = _get_plot_time(solver.sols[idx])
-        stage_times = _get_stage_interfaces(solver.sols[idx])
+        u, x = _stack_data(solver.sols[idx])
+        u = np.repeat(u, 2, axis=0)
+        t = _stack_time(solver.sols[idx])
+        tu = np.concatenate(([t[0]], np.repeat(t[1:-1], 2), [t[-1]]))
+        stage_times = _get_cumulative_times(solver.sols[idx])
 
         # Draw vertical dashed lines to separate stages
-        for tl in stage_times:
+        for tl in stage_times[1:-1]:
             ax.axvline(tl, color='gray', linestyle='--')
 
         # Plot psi and theta
@@ -617,3 +611,134 @@ def plot_attitude(solver : Solver, indices=[-1]):
     fig.tight_layout()
 
     return fig
+
+def plot_control_rates(solver: Solver, indices=[-1]):
+    def compare_constraints(const1, const2):
+        if const1.enabled and const2.enabled:
+            if const1.value is not None and const2.value is not None:
+                if const1.value <= const2.value: # constraint 1 is more restrictive
+                    return 1
+                else: 
+                    return 0
+            else:
+                return 0
+        elif const1.enabled and const1.value is not None:
+            return 1 # constraint 1 is more restrictive
+        else:
+            return 0
+                
+
+    fig, axs = plt.subplots(3, 1, figsize=(10, 9))
+    plt.ion()
+    for idx in indices:
+        t = _stack_time(solver.sols[idx])    # kN + 1
+        t_mid = (t[1:] + t[:-1])/2           # kN
+        dt = np.diff(t_mid)                  # kN - 1
+        u, x = _stack_data(solver.sols[idx]) # kN
+        du = np.diff(u, axis=0)              # kN - 1
+        r = np.repeat(du[:, 1]/dt * np.cos((u[:-1, 2] + u[1:, 2])/2), 2)
+        q = np.repeat(du[:, 2]/dt, 2)
+        stage_times = _get_cumulative_times(solver.sols[idx])
+        # for f we only care aboute the N - 1 within each stage (f across stages doesn't matter)
+        # N = 3
+        # u  = [0, 1, 2 | 3, 4, 5 | 6, 7, 8] # kN
+        # du =   [0, 1 |2|  3, 4 |5|  6, 7]  # kN - 1
+        label_flag = False
+        label_flag_r = False
+        label_flag_q = False
+        N_cum = np.concatenate(([0], np.cumsum(solver.N)))
+        for k in range(solver.nstages):
+            ## f
+            fk = du[N_cum[k]:N_cum[k+1]-1, 0]
+            dtk = dt[N_cum[k]:N_cum[k+1]-1]
+            dfdt_k = fk/dtk
+            dfdt_k = np.repeat(dfdt_k, 2) # 2N - 2
+            t_mid_k = t_mid[N_cum[k]:N_cum[k+1]] # N
+            t_mid_k = np.concatenate(([t_mid_k[0]], np.repeat(t_mid_k[1:-1], 2), [t_mid_k[-1]])) # 2N - 2
+            label = '$\\tau_{'+str(k+1)+'}$'
+            axs[0].plot(t_mid_k, dfdt_k, label=label, linewidth=3)
+
+            max_tau = solver.constraints[k].max_tau
+            if max_tau.enabled and max_tau.value is not None:
+                label = None if label_flag else '$\\tau_{max}$'
+                axs[0].hlines(y=max_tau.value, xmin=t_mid_k[0], xmax=t_mid_k[-1], color='red', linestyle='-.', label=label)
+                axs[0].hlines(y=-max_tau.value, xmin=t_mid_k[0], xmax=t_mid_k[-1], color='red', linestyle='-.', label=None)
+                label_flag = True
+
+            if k + 1 < solver.nstages: # if not last stage
+                max_r_0 = solver.constraints[k].max_body_rate_y
+                max_r_1 = solver.constraints[k+1].max_body_rate_y
+                xmax_r = t_mid[N_cum[k+1] -1 + compare_constraints(max_r_0, max_r_1)]
+                max_q_0 = solver.constraints[k].max_body_rate_z
+                max_q_1 = solver.constraints[k+1].max_body_rate_z
+                xmax_q = t_mid[N_cum[k+1] -1 + compare_constraints(max_q_0, max_q_1)]
+            else: # last stage
+                xmax_r = t_mid[-1]
+                xmax_q = t_mid[-1]
+            if k+1 > 1: # if not first stage
+                max_r_0 = solver.constraints[k-1].max_body_rate_y
+                max_r_1 = solver.constraints[k].max_body_rate_y
+                xmin_r = t_mid[N_cum[k] - compare_constraints(max_r_1, max_r_0)]
+                max_q_0 = solver.constraints[k-1].max_body_rate_z
+                max_q_1 = solver.constraints[k].max_body_rate_z
+                xmin_q = t_mid[N_cum[k] - compare_constraints(max_q_1, max_q_0)]
+            else: # first stage
+                xmin_r = t_mid[0]
+                xmin_q = t_mid[0]
+
+            max_r = solver.constraints[k].max_body_rate_y
+            if max_r.enabled and max_r.value is not None:
+                label = None if label_flag_r else '$r_{max}$'
+                axs[1].hlines(y=max_r.value, xmin=xmin_r, xmax=xmax_r, color='red', linestyle='-.', label=label)
+                axs[1].hlines(y=-max_r.value, xmin=xmin_r, xmax=xmax_r, color='red', linestyle='-.', label=None)
+                label_flag_r = True
+
+            max_q = solver.constraints[k].max_body_rate_z
+            if max_q.enabled and max_q.value is not None:
+                label = None if label_flag_q else '$q_{max}$'
+                axs[2].hlines(y=max_q.value, xmin=xmin_q, xmax=xmax_q, color='red', linestyle='-.', label=label)
+                axs[2].hlines(y=-max_q.value, xmin=xmin_q, xmax=xmax_q, color='red', linestyle='-.', label=None)
+                label_flag_q = True
+
+        t_mid = np.concatenate(([t_mid[0]], np.repeat(t_mid[1:-1], 2), [t_mid[-1]]))
+        axs[1].plot(t_mid, r, label='$r$', linewidth=3)
+        axs[2].plot(t_mid, q, label='$q$', linewidth=3)
+
+        # draw vertical dashed lines to separate stages
+        for tl in stage_times[1:-1]:
+            axs[0].axvline(tl, color='gray', linestyle='--')
+            axs[1].axvline(tl, color='gray', linestyle='--')
+            axs[2].axvline(tl, color='gray', linestyle='--')
+
+        ylabels = ['$\\tau$ [%/s]', '$r$ [rad/s]', '$q$ [rad/s]']
+        titles = ['Thottle Rate', 'Body Rate $y$', 'Body Rate $z$']
+        for i, ax in enumerate(axs):
+            ax.set_xlabel('Time [s]')
+            ax.set_ylabel(ylabels[i])
+            ax.set_title(titles[i])
+            ax.legend()
+            ax.grid(True)
+        fig.tight_layout()
+
+
+        # need to calculate t midpoints
+        # need to calculate N-1 dudt using midpoints
+        # dudt's get plotted between t midpoints
+        # The most technically correct formulation is as follows:
+        # Given states x0, x1, x2, x3
+        # Given inputs   u0, u1, u2
+        # We calculate:    du0 du1
+        # dt01 = ((T01/N01)_01 + (T12/N12)_12)/2
+        # In most cases T01 = T12, N01 = N12 except at stage boundaries
+        # du0 = (u1 - u0)/dt01
+        # du1 = (u2 - u1)/dt12
+        # We don't actually constrain these directly we want to constraint body rates instead
+        # lb < dpsi0*cos((theta0 + theta1)/2) < ub
+        # lb < dtheta0 < ub
+        # lb < df0 < ub
+        # In full:
+        # lb < 2*(psi_i+1 - psi_i)/(Tki+1/Nki+1 + Tki/Nki)*cos(theta_i+1/2 + theta_i/2) < ub
+        # It may be reasonable to simplify this to:
+        # lb < (psi_i+1 - psi_i)/(Tki/Nki)*cos(theta_i) < ub
+        # This reduces the number of variable dependencies in the constraint but is less accurate esspecially 
+        # at stage boundaries.
