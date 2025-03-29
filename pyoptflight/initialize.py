@@ -95,7 +95,7 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
         # Linearly interpolate the velocity magnitudes for each point.
         seg_vel_mags = (1 - seg_t) * v0_mag + seg_t * v1_mag
         
-        seg_f = (1 - seg_t) * x_data['x0']['ctrl'][0] + seg_t * x_data['xf']['ctrl'][0]
+        seg_f = (1 - seg_t) * 1.0 + seg_t * 0.0
 
         seg_velocities = []
         seg_controls = []
