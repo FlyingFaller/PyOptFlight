@@ -75,7 +75,9 @@ class Solver(AutoRepr):
                 'iter_count': self.iter_count,
                 'T': self.T,
                 'nsolves': self.nsolves,
-                'nlp_creation_time': self.nlp_creation_time}
+                'nlp_creation_time': self.nlp_creation_time,
+                'timestep_sizes': [self.T_init[i]/self.N[i] for i in range(self.nstages)],
+                'final_mass': self.sols[-1][-1].X[-1][0]}
 
     def initialize_from_func(self, init_func: Callable, opts: Dict) -> None:
         """Initializes solver with sols computed by a function"""
