@@ -80,7 +80,30 @@ class ConstraintSet(AutoRepr):
             setattr(merged, name, Constraint(base.value, base.enabled))
         return merged
 
-    # May delete TODO
+    @classmethod
+    def choose_max(cls, cs_1: "ConstraintSet", cs_2: "ConstraintSet") -> "ConstraintSet":
+        """
+        Chooses 'most strict' constraint for each constraint in a set. 
+        """
+        new_cs = cls()
+        for name in cls.CONSTRAINT_NAMES:
+            c1 = cs_1[name]
+            c2 = cs_2[name]
+            if c1.enabled and c2.enabled and c1.value is not None and c2.value is not None:
+                new_value = min(c1.value, c2.value)
+                new_enable = True
+            elif c1.enabled and c1.value is not None:
+                new_value = c1.value
+                new_enable = True
+            elif c2.enabled and c2.value is not None:
+                new_value = c2.value
+                new_enable = True
+            else:
+                new_value = None
+                new_enable = False
+            new_cs.set(name, new_value, new_enable)
+        return new_cs
+
     def __getitem__(self, constraint_name: str) -> Constraint:
         """Allow dict-like access to constraints."""
         return getattr(self, constraint_name)
