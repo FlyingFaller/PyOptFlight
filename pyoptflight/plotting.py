@@ -545,7 +545,7 @@ def plot_throttle(solver: Solver, indices=[-1]):
             # Compute effective throttle using the provided formula
             f_min = solver.constraints[k].f_min.value
             f_min = 0 if f_min is None or not solver.constraints[k].f_min.enabled else f_min
-            K = 100
+            K = 500
             start = sum(solver.N[:k])
             end = sum(solver.N[:k+1])
             f = np.array(sol.U)[:, 0]
