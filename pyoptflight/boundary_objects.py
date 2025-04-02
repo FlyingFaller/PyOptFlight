@@ -38,8 +38,8 @@ class FreeBound(BoundaryObj):
         return {"ubx": 6*[ca.inf],
                 "lbx": 6*[-ca.inf]}
     def get_ub(self, solver):
-        return {"ubu": [1, ca.pi, ca.pi/2],
-                "lbu": [0, -ca.pi, -ca.pi/2]}
+        return {"ubu": [ca.pi, ca.pi/2],
+                "lbu": [-ca.pi, -ca.pi/2]}
 
 class LatLngBound(BoundaryObj):
     def __init__(
@@ -214,16 +214,13 @@ class LatLngBound(BoundaryObj):
         }
     
     def get_ub(self, solver: "Solver"):
-        free_bound = FreeBound.get_ub(self, solver)
         if solver.config.landing or self.ERA0 is None:
-            return free_bound
+            return FreeBound.get_ub(self, solver)
         else:
-            ubf = free_bound['ubu'][0]
-            lbf = free_bound['lbu'][0]
             theta = -np.deg2rad(self.lat)
             psi = (self.ERA0 + np.deg2rad(self.lng) + np.pi)%(2*np.pi) - np.pi
-            ubu = [ubf, psi, theta]
-            lbu = [lbf, psi, theta]
+            ubu = [psi, theta]
+            lbu = [psi, theta]
             return {'ubu': ubu, 'lbu': lbu}
             
 
@@ -235,20 +232,16 @@ class StateBound(BoundaryObj):
         self.lbx = kwargs.get("lbx")
         self.pos = kwargs.get("pos")
         self.vel = kwargs.get("vel")
-        self.ctrl = kwargs.get("ctrl")
         self.atti = kwargs.get("atti")
-        self.f = kwargs.get("f")
 
     def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
         if self.state is not None:
             return {"pos": np.atleast_2d(self.state[:3]), 
                     "vel": np.atleast_2d(self.state[3:6]), 
-                    # "ctrl": np.atleast_2d(self.state[6:9]),
                     "axis": np.array([0, 0, 1])} # May be more correct to make zero vector?
         elif self.pos is not None and self.vel is not None:
             return {"pos": np.atleast_2d(self.pos), 
                     "vel": np.atleast_2d(self.vel), 
-                    # "ctrl": np.atleast_2d(self.ctrl),
                     "axis": np.array([0, 0, 1])}
         else:
             if self.ubx == self.lbx:
@@ -256,17 +249,14 @@ class StateBound(BoundaryObj):
             else:
                 poses = np.zeros((npoints, 3))
                 vels = np.zeros((npoints, 3))
-                # ctrls = np.zeros((npoints, 3/))
                 for i in range(npoints):
                     state = self.lbx + (self.ubx - self.lbx)*i/(npoints-1)
                     poses[i] = state[:3]
                     vels[i] = state[3:6]
-                    # ctrls[i] = state[6:9]
                 axis = np.cross(poses[0], poses[-1])
                 axis = axis/np.linalg.norm(axis) if np.linalg.norm(axis) > 0 else np.array([0, 0, 1])
                 return {"pos": np.atleast_2d(poses), 
                         "vel": np.atleast_2d(vels), 
-                        # "ctrl": np.atleast_2d(ctrls),
                         "axis": axis}            
 
     def get_xb(self, solver: "Solver") -> Dict:
@@ -281,17 +271,11 @@ class StateBound(BoundaryObj):
             return {"ubx": self.state, "lbx": self.state}
 
     def get_ub(self, solver):
-        if self.ctrl is not None:
-            f_min, f_max = self.ctrl[0], self.ctrl[0]
-            atti_min, atti_max = self.ctrl[1:], self.ctrl[1:]
-        else:
-            udict = FreeBound.get_ub(self, solver)
-            f_min = self.f if self.f is not None else udict['lbu'][0]
-            atti_min = self.atti if self.atti is not None else udict['lbu'][1:]
-            f_max = self.f if self.f is not None else udict['ubu'][0]
-            atti_max = self.atti if self.atti is not None else udict['ubu'][1:]
-        return {'ubu': [f_max] + atti_max,
-                'lbu': [f_min] + atti_min}
+        udict = FreeBound.get_ub(self, solver)
+        atti_min = self.atti if self.atti is not None else udict['lbu']
+        atti_max = self.atti if self.atti is not None else udict['ubu']
+        return {'ubu': atti_max,
+                'lbu': atti_min}
     
 class KeplerianBound(BoundaryObj):
     """
@@ -322,16 +306,13 @@ class KeplerianBound(BoundaryObj):
             self.ha = self.a*(1+self.e) - body.r_0
             self.hp = self.a*(1-self.e) - body.r_0
         # if None (default), max range is assigned. Behavior is a bit clunky may clean up later. 
-        self.ctrl = kwargs.get("ctrl")
         self.atti = kwargs.get("atti")
-        self.f = kwargs.get("f")
 
     def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
         if self.ν is None:
             ν_range = np.linspace(-np.pi, np.pi, npoints)
             poses = np.zeros((npoints, 3))
             vels = np.zeros((npoints, 3))
-            # ctrls = np.zeros((npoints, 3))
 
             for k, ν in enumerate(ν_range):
                 pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, solver.body.mu)
@@ -344,7 +325,6 @@ class KeplerianBound(BoundaryObj):
             vels = pos_vel[3:6]
         return {'pos': np.atleast_2d(poses), 
                 'vel': np.atleast_2d(vels), 
-                # 'ctrl': np.atleast_2d(ctrls), 
                 'axis': h/np.linalg.norm(h)}
     
     def get_ge(self, Xi, Ui, T_sum, solver: "Solver") -> Dict:
@@ -387,13 +367,6 @@ class KeplerianBound(BoundaryObj):
         Returns:
             dict of lists: {ubx, lbx} -- the upper and lower bounds on the state vector.
         """
-        if self.f is not None:
-            f_min = self.f
-            f_max = self.f
-        else:
-            f_min = 0
-            f_max = 1
-
         if self.ν is None:
             ν_range = (-np.pi, np.pi)
             ubx = []
