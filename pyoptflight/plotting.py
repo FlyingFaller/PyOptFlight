@@ -487,11 +487,17 @@ def plot_solutions(solver: Solver,
 
         for k in range(0, solver.nstages):
             sol = solver.sols[idx][k]
+            f_min_constr = solver.constraints[k].f_min
+            f_min = f_min_constr.value if f_min_constr.enabled and f_min_constr.value is not None else 0
+
+            U = np.array(sol.U)
+            U[:, 0] = U[:, 0] - U[:, 0]*np.maximum(0, np.minimum(1, (f_min - U[:, 0])/solver.delta))
+
             fig = plot_trajectory(fig, 
                                   np.array(sol.X)[:, 1:4],
                                   np.array(sol.X)[:, 4:7],
                                 #   np.array(sol.X)[:, 7:10],
-                                  np.array(sol.U),
+                                  U,
                                   markers=markers, 
                                   colorscale = colorscale,
                                   color=stage_colors[k%len(stage_colors)],
@@ -549,7 +555,8 @@ def plot_throttle(solver: Solver, indices=[-1]):
             start = sum(solver.N[:k])
             end = sum(solver.N[:k+1])
             f = np.array(sol.U)[:, 0]
-            f_eff[start:end] = f / (1 + np.exp(-K * (f - f_min)))
+            f_eff[start:end] = f - f*np.maximum(0, np.minimum(1, (f_min - f)/solver.delta))
+            # f_eff[start:end] = f / (1 + np.exp(-K * (f - f_min)))
 
         # Repeat arrays for a "step" plotting effect
         f_eff = np.repeat(f_eff, 2)
@@ -719,6 +726,53 @@ def plot_control_rates(solver: Solver, indices=[-1]):
             ax.legend()
             ax.grid(True)
         fig.tight_layout()
+    return fig
+
+def plot_qalpha(solver: Solver, indices=[-1]):
+    fig, axs = plt.subplots(2, 1, figsize=(10, 6))
+    plt.ion()
+    for idx in indices:
+        t = _stack_time(solver.sols[idx]) # kN + 1
+        stage_times = _get_cumulative_times(solver.sols[idx])
+        u, x = _stack_data(solver.sols[idx])
+        print(f'{u.shape = }')
+        N_cum = np.cumsum(solver.N) + np.arange(0, solver.nstages)
+        x = np.delete(x, N_cum[:-1], axis=0)
+        px, py, pz = x[:, 1], x[:, 2], x[:, 3]
+        vx, vy, vz = x[:, 4], x[:, 5], x[:, 6]
+        psi, theta = u[:, 1], u[:, 2]
+        h = np.sqrt(px**2 + py**2 + pz**2) - solver.body.r_0
+        rho = solver.body.atm.rho_0*np.exp(-h/solver.body.atm.H)
+        # r = np.sqrt(px**2 + py**2 + pz**2)
+        v_rel = np.block([[vx + solver.body.omega_0*py], 
+                          [vy - solver.body.omega_0*px], 
+                          [vz]]).T
+        q = 0.5*rho*np.sum(v_rel**2, axis=1) # kN + 1
+        print(f'{v_rel[0] = }')
+        print(f'{vx[0], vy[0], vz[0] = }')
+        ebx = np.block([[np.cos(psi)*np.cos(theta)], 
+                        [np.sin(psi)*np.cos(theta)], 
+                        [-np.sin(theta)]]).T
+        print(f'{ebx[0] = }')
+        print(f'{ebx.shape = }')
+        print(f'{v_rel.shape = }')
+        alpha0 = np.arccos(np.sum(ebx*v_rel[:-1], axis=1)/np.sqrt(np.sum((v_rel[:-1])**2, axis=1))) #kN
+        alpha1 = np.arccos(np.sum(ebx*v_rel[1:], axis=1)/np.sqrt(np.sum((v_rel[1:])**2, axis=1))) #kN
+        alpha = np.empty(len(alpha0)+len(alpha1)) # 2kN
+        alpha[0::2] = alpha0
+        alpha[1::2] = alpha1
+        talpha = np.concatenate(([t[0]], np.repeat(t[1:-1], 2), [t[-1]]))
+        axs[0].plot(t, q, label = '$q$', linewidth=3)
+        axs[0].set_ylabel('Dynamic Pressure [MPa]')
+        axs[1].plot(talpha, np.rad2deg(alpha), label = '$\\alpha$', linewidth=3)
+        axs[1].set_ylabel('Angle of Attack [rad]')
+        for ax in axs:
+            ax.set_xlabel('Time [s]')
+            ax.legend()
+            ax.grid(True)
+        fig.tight_layout()
+    return fig
+
 
 
         # need to calculate t midpoints
