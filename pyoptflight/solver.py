@@ -58,14 +58,15 @@ class Solver(AutoRepr):
         self.merge_constraints(force_source=config.force_constraints)
 
         # DEBUG
-        self.extra_opts = {}
-        self.nlpsolver = None
-        self.nlpresult = None
-        self.lam_g = None
-        self.lam_x = None
-        self.warm_start = False
-        self.G = None
-        self.V =None
+        # self.extra_opts = {}
+        # self.nlpsolver = None
+        # self.nlpresult = None
+        # self.lam_g = None
+        # self.lam_x = None
+        # self.warm_start = False
+        # self.G = None
+        # self.V =None
+        self.delta = 0.01 # sensitivity of f_min constraint transistion region
 
     def stats(self) -> Dict:
         """Returns basic stats of overall solve"""
@@ -264,7 +265,9 @@ class Solver(AutoRepr):
             # Supporting Definitions #
             h = ca.sqrt(px**2 + py**2 + pz**2) - self.body.r_0 # Altitude
             F_max = stage.prop.F_vac + (stage.prop.F_SL - stage.prop.F_vac)*ca.exp(-h/self.body.atm.H) # Max thrust
-            F_eff = F_max*f/(1 + ca.exp(-K*(f - f_min))) # Effective thrust
+            # F_eff = F_max*f/(1 + ca.exp(-K*(f - f_min))) # Effective thrust
+            f_eff = f - f*ca.fmax(0, ca.fmin(1, (f_min - f)/self.delta))
+            F_eff = f_eff*F_max
             Isp = stage.prop.Isp_vac + (stage.prop.Isp_SL - stage.prop.Isp_vac)*ca.exp(-h/self.body.atm.H) # Isp
             g = -self.body.g_0*self.body.r_0**2*(px**2 + py**2 + pz**2)**(-3/2)*ca.vertcat(px, py, pz) # gravity vector
             rho = self.body.atm.rho_0*ca.exp(-h/self.body.atm.H) # denisty
@@ -338,12 +341,15 @@ class Solver(AutoRepr):
                     # do not let path dip below planet radius
                     G.append(ca.sumsqr(ca.vertcat(X[k][i][1:4])) - self.body.r_0**2)
 
+                    if f_min_constr.enabled and f_min_constr.value is not None:
+                        G.append((U[k][i][0] - f_min_constr.value + self.delta)*(U[k][i][0] - f_min_constr.value))
+
                     # constraints currently do not consider stage interface!
+                    xi = X[k][i]
+                    px, py, pz = xi[1], xi[2], xi[3]
+                    vx, vy, vz = xi[4], xi[5], xi[6]
                     if q_constr.enabled and q_constr.value is not None: # max q
                         # Make h, rho, v_rel casadi functions?
-                        xi = X[k][i]
-                        px, py, pz = xi[1], xi[2], xi[3]
-                        vx, vy, vz = xi[4], xi[5], xi[6]
                         h = ca.sqrt(px**2 + py**2 + pz**2) - self.body.r_0
                         rho = self.body.atm.rho_0*ca.exp(-h/self.body.atm.H)
                         v_rel_2 = (vx + self.body.omega_0*py)**2 + (vy - self.body.omega_0*px)**2 + vz**2
@@ -351,8 +357,6 @@ class Solver(AutoRepr):
                         G.append(q_constr.value - q) # Must be >= 0
 
                     if alpha_constr.enabled and alpha_constr.value is not None: # max AoA
-                        xi = X[k][i]
-                        vx, vy, vz = xi[4], xi[5], xi[6]
                         psi, theta = U[k][i][1], U[k][i][2]
                         ebx = ca.vertcat(ca.cos(psi)*ca.cos(theta), ca.sin(psi)*ca.cos(theta), -ca.sin(theta))
                         v_rel = ca.vertcat(vx + self.body.omega_0*py, vy - self.body.omega_0*px, vz)
@@ -364,11 +368,14 @@ class Solver(AutoRepr):
                 if i+1 < N: # if not last node
                     dt = T[k]/N
                     if tau_constr.enabled and tau_constr.value is not None:
-                        G.append(tau_constr.value - ca.fabs(U[k][i+1][0]-U[k][i][0])/dt) # Must be >= 0
+                        # G.append(tau_constr.value - ca.fabs(U[k][i+1][0]-U[k][i][0])/dt) # Must be >= 0
+                        G.append((U[k][i+1][0]-U[k][i][0])/dt)
                     if body_rate_y_constr.enabled and body_rate_y_constr.value is not None:
-                        G.append(body_rate_y_constr.value*ca.cos(U[k][i][2]) - ca.fabs(U[k][i+1][1]-U[k][i][1])/dt) # Must be >= 0
+                        # G.append(body_rate_y_constr.value*ca.cos(U[k][i][2]) - ca.fabs(U[k][i+1][1]-U[k][i][1])/dt) # Must be >= 0
+                        G.append((U[k][i+1][1]-U[k][i][1])/dt*ca.cos(U[k][i][2]))
                     if body_rate_z_constr.enabled and body_rate_z_constr.value is not None:
-                        G.append(body_rate_z_constr.value - ca.fabs(U[k][i+1][2]-U[k][i][2])/dt) # Must be >= 0
+                        # G.append(body_rate_z_constr.value - ca.fabs(U[k][i+1][2]-U[k][i][2])/dt) # Must be >= 0
+                        G.append((U[k][i+1][2]-U[k][i][2])/dt)
 
         # final constraint placed here for sparcity
         ge_f = self.xf.get_ge(X[-1][-1], U[-1][-1], T_sum, self)
@@ -429,6 +436,9 @@ class Solver(AutoRepr):
                     # radius constraint
                     lbg.append(0)
                     ubg.append(ca.inf)
+                    if f_min_constr.enabled and f_min_constr.value is not None:
+                        lbg.append(0)
+                        ubg.append(1)
                     if q_constr.enabled and q_constr.value is not None: # max q
                         lbg.append(0)
                         ubg.append(q_constr.value)
@@ -437,14 +447,14 @@ class Solver(AutoRepr):
                         ubg.append(2)
                 if i+1 < self.N[k]: # if not last node
                     if tau_constr.enabled and tau_constr.value is not None:
-                        lbg.append(0)
-                        ubg.append(ca.inf)
+                        lbg.append(-tau_constr.value)
+                        ubg.append(tau_constr.value)
                     if body_rate_y_constr.enabled and body_rate_y_constr.value is not None:
-                        lbg.append(0)
-                        ubg.append(ca.inf)
+                        lbg.append(-body_rate_y_constr.value)
+                        ubg.append(body_rate_y_constr.value)
                     if body_rate_z_constr.enabled and body_rate_z_constr.value is not None:
-                        lbg.append(0)
-                        ubg.append(ca.inf)
+                        lbg.append(-body_rate_z_constr.value)
+                        ubg.append(body_rate_z_constr.value)
 
         # final constraint
         gb_f = self.xf.get_gb(self)
@@ -461,30 +471,35 @@ class Solver(AutoRepr):
             N = self.N[k]
             m_0 = stage.m_0
             m_f = stage.m_f
+            f_min_constr = self.constraints[k].f_min
+            if f_min_constr.enabled and f_min_constr.value is not None:
+                lbf = max(f_min_constr.value - self.delta, 0)
+            else:
+                lbf = 0
             
             # bounds on first node
             if k == 0:
                 xb_0 = self.x0.get_xb(self)
                 ub_0 = self.x0.get_ub(self)
-                lbx += [m_0] + xb_0['lbx'] + ub_0['lbu']
-                ubx += [m_0] + xb_0['ubx'] + ub_0['ubu']
-            else:
-                lbx += [m_0] + xb_free['lbx'] + ub_free['lbu']
-                ubx += [m_0] + xb_free['ubx'] + ub_free['ubu']
+                lbx += [m_0] + xb_0['lbx'] + [lbf] + ub_0['lbu']
+                ubx += [m_0] + xb_0['ubx'] + [1]   + ub_0['ubu']
+            else: # stage interface nodes are here vvv
+                lbx += [m_0] + xb_free['lbx'] + [lbf] + ub_free['lbu']
+                ubx += [m_0] + xb_free['ubx'] + [1]   + ub_free['ubu']
 
             # bounds on next N-1 nodes (N total at this point)
             if k + 1 < self.nstages: # if not last stage
-                lbx += (N-1)*([m_f] + xb_free['lbx'] + ub_free['lbu'])
-                ubx += (N-1)*([m_0] + xb_free['ubx'] + ub_free['ubu'])
+                lbx += (N-1)*([m_f] + xb_free['lbx'] + [lbf] + ub_free['lbu'])
+                ubx += (N-1)*([m_0] + xb_free['ubx'] + [1]   + ub_free['ubu'])
             else: # Last stage gets extra xb and special ub 
-                lbx += (N-2)*([m_f] + xb_free['lbx'] + ub_free['lbu'])
-                ubx += (N-2)*([m_0] + xb_free['ubx'] + ub_free['ubu'])
+                lbx += (N-2)*([m_f] + xb_free['lbx'] + [lbf] + ub_free['lbu'])
+                ubx += (N-2)*([m_0] + xb_free['ubx'] + [1]   + ub_free['ubu'])
 
-                # final constrait
+                # final constraint
                 xb_f = self.xf.get_xb(self)
                 ub_f = self.xf.get_ub(self)
-                lbx += [m_f] + xb_free['lbx'] + ub_f['lbu'] + [m_f] + xb_f['lbx']
-                ubx += [m_0] + xb_free['ubx'] + ub_f['ubu'] + [m_0] + xb_f['ubx']
+                lbx += [m_f] + xb_free['lbx'] + [lbf] + ub_f['lbu'] + [m_f] + xb_f['lbx']
+                ubx += [m_0] + xb_free['ubx'] + [1]   + ub_f['ubu'] + [m_0] + xb_f['ubx']
 
         # SOLVE #
         result = self.nlpsolver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
