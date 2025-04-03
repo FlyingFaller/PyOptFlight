@@ -7,3 +7,4 @@ from .boundary_objects import *
 # from . import plotting
 from .initialize import *
 from .plotting import *
+from .physics import StagePhysics
