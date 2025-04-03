@@ -756,8 +756,10 @@ def plot_qalpha(solver: Solver, indices=[-1]):
         print(f'{ebx[0] = }')
         print(f'{ebx.shape = }')
         print(f'{v_rel.shape = }')
-        alpha0 = np.arccos(np.sum(ebx*v_rel[:-1], axis=1)/np.sqrt(np.sum((v_rel[:-1])**2, axis=1))) #kN
-        alpha1 = np.arccos(np.sum(ebx*v_rel[1:], axis=1)/np.sqrt(np.sum((v_rel[1:])**2, axis=1))) #kN
+        dot0 = np.minimum(1, np.sum(ebx*v_rel[:-1], axis=1)/np.sqrt(np.sum((v_rel[:-1])**2, axis=1)))
+        dot1 = np.minimum(1, np.sum(ebx*v_rel[1:], axis=1)/np.sqrt(np.sum((v_rel[1:])**2, axis=1)))
+        alpha0 = np.arccos(dot0) #kN
+        alpha1 = np.arccos(dot1) #kN
         alpha = np.empty(len(alpha0)+len(alpha1)) # 2kN
         alpha[0::2] = alpha0
         alpha[1::2] = alpha1
