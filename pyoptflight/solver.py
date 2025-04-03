@@ -5,6 +5,7 @@ from .boundary_objects import *
 from typing import List, Callable, Dict, Union
 from dataclasses import dataclass
 import time
+from .physics import StagePhysics
 
 @dataclass(repr=False)
 class Solution(AutoRepr):
@@ -210,10 +211,9 @@ class Solver(AutoRepr):
 
         start_time = time.time()
 
+        ### symbolic state and control vectors ###
         x = ca.SX.sym('[m, px, py, pz, vx, vy, vz]', 7, 1)
-        m, px, py, pz, vx, vy, vz = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
         u = ca.SX.sym('[f, psi, theta]', 3, 1)
-        f, psi, theta = u[0], u[1], u[2]
 
         nx = x.size1() # Number of states (10)
         nu = u.size1() # number of control vars (3)
@@ -237,16 +237,9 @@ class Solver(AutoRepr):
             X.append(Xk)
 
         for k, stage in enumerate(self.stages):
-            ###############
-            ### PHYSICS ###
-            ###############    
-
-            ### EOMS ###
-            # Temp vars before more complete model comes together#
-            K = 500
-            C_A = -stage.aero.C_D
-            C_Ny = stage.aero.C_L
-            C_Nz = stage.aero.C_L
+            ###################
+            ### PHYSICS/ODE ###
+            ###################
 
             # Constraints 
             f_min_constr = self.constraints[k].f_min
@@ -262,39 +255,9 @@ class Solver(AutoRepr):
             else:
                 f_min = 0
 
-            # Supporting Definitions #
-            h = ca.sqrt(px**2 + py**2 + pz**2) - self.body.r_0 # Altitude
-            F_max = stage.prop.F_vac + (stage.prop.F_SL - stage.prop.F_vac)*ca.exp(-h/self.body.atm.H) # Max thrust
-            # F_eff = F_max*f/(1 + ca.exp(-K*(f - f_min))) # Effective thrust
-            f_eff = f - f*ca.fmax(0, ca.fmin(1, (f_min - f)/self.delta))
-            F_eff = f_eff*F_max
-            Isp = stage.prop.Isp_vac + (stage.prop.Isp_SL - stage.prop.Isp_vac)*ca.exp(-h/self.body.atm.H) # Isp
-            g = -self.body.g_0*self.body.r_0**2*(px**2 + py**2 + pz**2)**(-3/2)*ca.vertcat(px, py, pz) # gravity vector
-            rho = self.body.atm.rho_0*ca.exp(-h/self.body.atm.H) # denisty
-            v_rel = ca.vertcat(vx + self.body.omega_0*py, vy - self.body.omega_0*px, vz) # atmosphere relative velocity
+            stage_physics = StagePhysics(self, stage, f_min)
+            ode = stage_physics.ode(x, u)
 
-            # body fram basis vectors
-            ebx = ca.vertcat(ca.cos(psi)*ca.cos(theta), ca.sin(psi)*ca.cos(theta), -ca.sin(theta))
-            # eby = ca.vertcat(-ca.sin(psi), ca.cos(psi), 0)
-            # ebz = ca.vertcat(ca.cos(psi)*ca.sin(theta), ca.sin(psi)*ca.sin(theta), ca.cos(theta))
-            
-            m_dot = -F_eff/(Isp*9.81e-3)
-            px_dot = vx
-            py_dot = vy
-            pz_dot = vz
-            # vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[0] + C_Ny*eby[0] + C_Nz*ebz[0])
-            # vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[1] + C_Ny*eby[1] + C_Nz*ebz[1])
-            # vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[2] + C_Ny*eby[2] + C_Nz*ebz[2])
-            # Drag only version if needed in testing
-            vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[0]
-            vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[1]
-            vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.norm_2(v_rel)*C_A*v_rel[2]
-
-            ###############################
-            ### ODE FUNC AND INTEGRATOR ###
-            ###############################
-
-            ode = ca.vertcat(m_dot, px_dot, py_dot, pz_dot, vx_dot, vy_dot, vz_dot)
             F_ode = ca.Function('F_ode', [x, u], [ode])
             # All integrators need x, u, dt (symbolics) and should return x_next
             dt = ca.SX.sym("dt")
@@ -343,38 +306,20 @@ class Solver(AutoRepr):
 
                     if f_min_constr.enabled and f_min_constr.value is not None:
                         G.append((U[k][i][0] - f_min_constr.value + self.delta)*(U[k][i][0] - f_min_constr.value))
-
                     # constraints currently do not consider stage interface!
-                    xi = X[k][i]
-                    px, py, pz = xi[1], xi[2], xi[3]
-                    vx, vy, vz = xi[4], xi[5], xi[6]
                     if q_constr.enabled and q_constr.value is not None: # max q
-                        # Make h, rho, v_rel casadi functions?
-                        h = ca.sqrt(px**2 + py**2 + pz**2) - self.body.r_0
-                        rho = self.body.atm.rho_0*ca.exp(-h/self.body.atm.H)
-                        v_rel_2 = (vx + self.body.omega_0*py)**2 + (vy - self.body.omega_0*px)**2 + vz**2
-                        q = 0.5*rho*v_rel_2
-                        G.append(q_constr.value - q) # Must be >= 0
-
+                        G.append(stage_physics.q(X[k][i]))
                     if alpha_constr.enabled and alpha_constr.value is not None: # max AoA
-                        psi, theta = U[k][i][1], U[k][i][2]
-                        ebx = ca.vertcat(ca.cos(psi)*ca.cos(theta), ca.sin(psi)*ca.cos(theta), -ca.sin(theta))
-                        v_rel = ca.vertcat(vx + self.body.omega_0*py, vy - self.body.omega_0*px, vz)
-                        v_rel = -v_rel if self.config.landing else v_rel
-                        cos_alpha = ca.dot(v_rel, ebx)/ca.norm_2(v_rel)
-                        G.append(cos_alpha - ca.cos(alpha_constr.value)) # Must be >= 0
+                        G.append(stage_physics.cos_alpha(X[k][i], U[k][i]))
                 
                 # rate constraints (temporary)
                 if i+1 < N: # if not last node
                     dt = T[k]/N
                     if tau_constr.enabled and tau_constr.value is not None:
-                        # G.append(tau_constr.value - ca.fabs(U[k][i+1][0]-U[k][i][0])/dt) # Must be >= 0
                         G.append((U[k][i+1][0]-U[k][i][0])/dt)
                     if body_rate_y_constr.enabled and body_rate_y_constr.value is not None:
-                        # G.append(body_rate_y_constr.value*ca.cos(U[k][i][2]) - ca.fabs(U[k][i+1][1]-U[k][i][1])/dt) # Must be >= 0
                         G.append((U[k][i+1][1]-U[k][i][1])/dt*ca.cos(U[k][i][2]))
                     if body_rate_z_constr.enabled and body_rate_z_constr.value is not None:
-                        # G.append(body_rate_z_constr.value - ca.fabs(U[k][i+1][2]-U[k][i][2])/dt) # Must be >= 0
                         G.append((U[k][i+1][2]-U[k][i][2])/dt)
 
         # final constraint placed here for sparcity
@@ -443,8 +388,8 @@ class Solver(AutoRepr):
                         lbg.append(0)
                         ubg.append(q_constr.value)
                     if alpha_constr.enabled and alpha_constr.value is not None: # max AoA
-                        lbg.append(0)
-                        ubg.append(2)
+                        lbg.append(np.cos(alpha_constr.value))
+                        ubg.append(1)
                 if i+1 < self.N[k]: # if not last node
                     if tau_constr.enabled and tau_constr.value is not None:
                         lbg.append(-tau_constr.value)
