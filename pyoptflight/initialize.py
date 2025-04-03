@@ -103,20 +103,19 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
         for j in range(solver.N[k] + 1):
             if j < solver.N[k]:
                 diff = seg_positions[j + 1] - seg_positions[j]
+                # Compute a control vector (example: scaled version of the negative/positive direction).
+                if solver.config.landing:
+                    ctrl_dir = -dir
+                else:
+                    ctrl_dir = dir
+                psi = np.arctan2(ctrl_dir[1], ctrl_dir[0])
+                theta = np.arccos(ctrl_dir[2]) - np.pi/2
+                seg_controls.append([seg_f[j], psi, theta])
             else:
                 diff = seg_positions[j] - seg_positions[j - 1]
             # Normalize the finite difference to get the direction.
             dir = diff / np.linalg.norm(diff)
             seg_velocities.append(seg_vel_mags[j] * dir)
-            
-            # Compute a control vector (example: scaled version of the negative/positive direction).
-            if solver.config.landing:
-                ctrl_dir = -dir
-            else:
-                ctrl_dir = dir
-            psi = np.arctan2(ctrl_dir[1], ctrl_dir[0])
-            theta = np.arccos(ctrl_dir[2]) - np.pi/2
-            seg_controls.append(np.array([seg_f[j], psi, theta]))
         
         # Compute the mass at each point by linear interpolation between the stage's initial and final masses.
         seg_masses = []
@@ -398,12 +397,12 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     sols = []
     for k in range(0, solver.nstages):
-        block_start = sum(solver.N[0:k]) + k 
-        block_end = sum(solver.N[0:k+1]) + k+1
+        block_start = sum(solver.N[0:k]) + k # [k-1]*(N+1)
+        block_end = sum(solver.N[0:k+1]) + k+1 # k*(N+1)
         m = x_res[block_start : block_end, 0]
         pos = x_pos[block_start: block_end]
         vel = x_vel[block_start: block_end]
-        ctrl = x_ctrl[block_start: block_end]
+        ctrl = x_ctrl[block_start: block_end - 1] # First N only
         t, dt = np.linspace(0, T_res[k], solver.N[k]+1, retstep=True)
 
         sols.append(
