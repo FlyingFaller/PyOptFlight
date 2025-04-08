@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Dict, Callable
 if TYPE_CHECKING:
-    from solver import Solver  # Only used during type checking
+    from solver import SolverContext  # Only used during type checking
 from .functions import *
 from .setup import *
 import numpy as np
@@ -22,22 +22,22 @@ def _optimize_extreme(func: Callable, bounds: list[tuple[float, float]]) -> tupl
 class BoundaryObj(AutoRepr):
     def __init__(self, **kwargs) -> None:
         pass
-    def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
+    def get_x0s(self, context: "SolverContext", npoints=100) -> Dict:
         return {'pos': [], 'vel': [], 'axis': []}
-    def get_ge(self, Xi, Ui, T_sum, solver: "Solver") -> Dict:
+    def get_ge(self, Xi, Ui, T_sum, solver: "SolverContext") -> Dict:
         return {"g": [], "e": []}
-    def get_gb(self, solver: "Solver") -> Dict:
+    def get_gb(self, context: "SolverContext") -> Dict:
         return {"lbg": [], "ubg": []}
-    def get_xb(self, solver: "Solver") -> Dict:
+    def get_xb(self, context: "SolverContext") -> Dict:
         return {"ubx": [], "lbx": []}
-    def get_ub(self, solver: "Solver") -> Dict:
+    def get_ub(self, context: "SolverContext") -> Dict:
         return {"ubu": [], "lbu": []}
     
 class FreeBound(BoundaryObj):
-    def get_xb(self, solver):
+    def get_xb(self, context: "SolverContext") -> Dict:
         return {"ubx": 6*[ca.inf],
                 "lbx": 6*[-ca.inf]}
-    def get_ub(self, solver):
+    def get_ub(self, context: "SolverContext") -> Dict:
         return {"ubu": [ca.pi, ca.pi/2],
                 "lbu": [-ca.pi, -ca.pi/2]}
 
@@ -62,12 +62,12 @@ class LatLngBound(BoundaryObj):
         self.ERA0 = ERA0
         self.ERA0_range = ERA0_range
     
-    def get_x0s(self, solver: "Solver", npoints=100) -> Dict: # For use only in initialization scripts
+    def get_x0s(self, context: "SolverContext", npoints=100) -> Dict: # For use only in initialization scripts
         # Need to determine possible pos, vel, f, atti and axis value
-        T_min = sum(solver.T_min)
-        T_max = sum(solver.T_max)
-        omega_0 = solver.body.omega_0
-        if solver.config.landing: # landing
+        T_min = sum(context.T_min)
+        T_max = sum(context.T_max)
+        omega_0 = context.body.omega_0
+        if context.config.landing: # landing
             if self.ERA0 is not None:
                 self.ERA_range = (self.ERA0 + omega_0*T_min, self.ERA0 + omega_0*T_max)
             else:
@@ -79,9 +79,9 @@ class LatLngBound(BoundaryObj):
                 self.ERA_range = (self.ERA0, self.ERA0)
                 npoints = 1
 
-        r = solver.body.r_0 + self.alt
+        r = context.body.r_0 + self.alt
         theta = np.pi/2 - np.deg2rad(self.lat)
-        speed = -self.vel if solver.config.landing else self.vel
+        speed = -self.vel if context.config.landing else self.vel
         phi_range = np.linspace(self.ERA_range[0], self.ERA_range[1], npoints) + np.deg2rad(self.lng)
 
         poses = np.zeros((npoints, 3))
@@ -108,19 +108,19 @@ class LatLngBound(BoundaryObj):
                 # 'ctrl': np.atleast_2d(ctrls), 
                 'axis': np.array([0, 0, 1])}
 
-    def get_ge(self, Xi, Ui, T_sum, solver: "Solver") -> Dict:
+    def get_ge(self, Xi, Ui, T_sum, context: "SolverContext") -> Dict:
         x, y, z = Xi[1], Xi[2], Xi[3]
         vx, vy, vz = Xi[4], Xi[5], Xi[6]
-        vx_rel = vx + solver.body.omega_0*y
-        vy_rel = vy - solver.body.omega_0*x
+        vx_rel = vx + context.body.omega_0*y
+        vy_rel = vy - context.body.omega_0*x
         g = []
         e = []
-        if solver.config.landing or self.ERA0 is None:
-            g.append((x**2 + y**2) - ((solver.body.r_0 + self.alt)*np.cos(np.deg2rad(self.lat)))**2) # constraint on length of px, py (pz is known)
+        if context.config.landing or self.ERA0 is None:
+            g.append((x**2 + y**2) - ((context.body.r_0 + self.alt)*np.cos(np.deg2rad(self.lat)))**2) # constraint on length of px, py (pz is known)
             g.append((vx_rel**2 + vy_rel**2) - (self.vel*np.cos(np.deg2rad(self.lat)))**2) # constraint on length of vx, vy (vz is known)
             e += [True, True]
         if self.ERA0 is None:
-            if solver.config.landing:
+            if context.config.landing:
                 # g.append(ca.arctan2(y*vx_rel - x*vy_rel, -x*vx_rel - y*vy_rel)) # constraint on velocity direction
                 # x.y/(|x||y|) = cos(0) = 1
                 g.append((-vx_rel*x - vy_rel*y) - self.vel*np.cos(np.deg2rad(self.lat))*ca.sqrt(x**2+y**2))
@@ -128,8 +128,8 @@ class LatLngBound(BoundaryObj):
                 # g.append(ca.arctan2(x*vy_rel - y*vx_rel, x*vx_rel + y*vy_rel)) # constraint on velocity direction
                 g.append((vx_rel*x + vy_rel*y) - self.vel*np.cos(np.deg2rad(self.lat))*ca.sqrt(x**2+y**2))
             e.append(True)
-        elif solver.config.landing:
-            g.append(ca.arctan2(y, x) - (ca.fmod(self.ERA0 + solver.body.omega_0*T_sum + np.deg2rad(self.lng) + ca.pi, 2*ca.pi) - ca.pi)) # constraint on position angle at time of landing
+        elif context.config.landing:
+            g.append(ca.arctan2(y, x) - (ca.fmod(self.ERA0 + context.body.omega_0*T_sum + np.deg2rad(self.lng) + ca.pi, 2*ca.pi) - ca.pi)) # constraint on position angle at time of landing
             # alternate formulation:
             # angle = self.ERA0 + solver.body.omega_0*T_sum + np.deg2rad(self.lng)
             # xdes = ca.cos(angle)
@@ -139,7 +139,7 @@ class LatLngBound(BoundaryObj):
             g.append((-vx_rel*x - vy_rel*y) - self.vel*np.cos(np.deg2rad(self.lat))*ca.sqrt(x**2+y**2))
             e += [True, True]
 
-        if solver.config.landing or self.ERA0 is None:
+        if context.config.landing or self.ERA0 is None:
             # constrain on attitude direction
             psi, theta = Ui[1], Ui[2]
             atti_x = ca.cos(theta)*ca.cos(psi)
@@ -151,24 +151,24 @@ class LatLngBound(BoundaryObj):
 
         return {"g": g, "e": e}
     
-    def get_gb(self, solver: "Solver") -> Dict:
+    def get_gb(self, context: "SolverContext") -> Dict:
         lbg = []
         ubg = []
         if self.ERA0 is None:
             lbg += 4*[0]
             ubg += 4*[0]
-        elif solver.config.landing:
+        elif context.config.landing:
             lbg += 5*[0]
             ubg += 5*[0]
         return {"lbg": lbg, "ubg": ubg}
 
-    def get_xb(self, solver: "Solver") -> Dict:
-        T_min = sum(solver.T_min)
-        T_max = sum(solver.T_max)
-        omega_0 = solver.body.omega_0
+    def get_xb(self, context: "SolverContext") -> Dict:
+        T_min = sum(context.T_min)
+        T_max = sum(context.T_max)
+        omega_0 = context.body.omega_0
 
         # Determine ERA_range (may be [ERA0, ERA0])
-        if solver.config.landing: # landing
+        if context.config.landing: # landing
             if self.ERA0 is not None:
                 self.ERA_range = (self.ERA0 + omega_0*T_min, self.ERA0 + omega_0*T_max)
             else:
@@ -180,7 +180,7 @@ class LatLngBound(BoundaryObj):
                 self.ERA_range = (self.ERA0, self.ERA0)
         
         # Convert ERA range and lng to a global spherical system
-        r = solver.body.r_0 + self.alt
+        r = context.body.r_0 + self.alt
         theta = np.pi/2 - np.deg2rad(self.lat)
         phi_min = self.ERA_range[0] + np.deg2rad(self.lng)
         phi_max = self.ERA_range[1] + np.deg2rad(self.lng)
@@ -193,7 +193,7 @@ class LatLngBound(BoundaryObj):
         pz_min, pz_max = r*np.cos(theta), r*np.cos(theta)
 
         # Determine min max vx, vy, vz
-        speed = -self.vel if solver.config.landing else self.vel
+        speed = -self.vel if context.config.landing else self.vel
         def vx_func(phi):
             x = np.sin(theta)*np.cos(phi[0])
             y = np.sin(theta)*np.sin(phi[0])
@@ -213,9 +213,9 @@ class LatLngBound(BoundaryObj):
             "lbx": [px_min, py_min, pz_min, vx_min, vy_min, vz_min]
         }
     
-    def get_ub(self, solver: "Solver"):
-        if solver.config.landing or self.ERA0 is None:
-            return FreeBound.get_ub(self, solver)
+    def get_ub(self, context: "SolverContext"):
+        if context.config.landing or self.ERA0 is None:
+            return FreeBound.get_ub(self, context)
         else:
             theta = -np.deg2rad(self.lat)
             psi = (self.ERA0 + np.deg2rad(self.lng) + np.pi)%(2*np.pi) - np.pi
@@ -234,7 +234,7 @@ class StateBound(BoundaryObj):
         self.vel = kwargs.get("vel")
         self.atti = kwargs.get("atti")
 
-    def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
+    def get_x0s(self, context: "SolverContext", npoints=100) -> Dict:
         if self.state is not None:
             return {"pos": np.atleast_2d(self.state[:3]), 
                     "vel": np.atleast_2d(self.state[3:6]), 
@@ -259,7 +259,7 @@ class StateBound(BoundaryObj):
                         "vel": np.atleast_2d(vels), 
                         "axis": axis}            
 
-    def get_xb(self, solver: "Solver") -> Dict:
+    def get_xb(self, context: "SolverContext") -> Dict:
         if self.ubx is not None and self.lbx is not None:
             if len(self.ubx) == 6 and len(self.lbx) == 6:
                 return {"ubx": self.ubx, "lbx": self.lbx}    
@@ -270,8 +270,8 @@ class StateBound(BoundaryObj):
             self.state = np.concatenate((self.pos, self.vel))
             return {"ubx": self.state, "lbx": self.state}
 
-    def get_ub(self, solver):
-        udict = FreeBound.get_ub(self, solver)
+    def get_ub(self, context: "SolverContext"):
+        udict = FreeBound.get_ub(self, context)
         atti_min = self.atti if self.atti is not None else udict['lbu']
         atti_max = self.atti if self.atti is not None else udict['ubu']
         return {'ubu': atti_max,
@@ -308,26 +308,26 @@ class KeplerianBound(BoundaryObj):
         # if None (default), max range is assigned. Behavior is a bit clunky may clean up later. 
         self.atti = kwargs.get("atti")
 
-    def get_x0s(self, solver: "Solver", npoints=100) -> Dict:
+    def get_x0s(self, context: "SolverContext", npoints=100) -> Dict:
         if self.ν is None:
             ν_range = np.linspace(-np.pi, np.pi, npoints)
             poses = np.zeros((npoints, 3))
             vels = np.zeros((npoints, 3))
 
             for k, ν in enumerate(ν_range):
-                pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, solver.body.mu)
+                pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν, context.body.mu)
                 poses[k] = pos_vel[:3]
                 vels[k] = pos_vel[3:6]
 
         else:
-            pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, solver.body.mu)
+            pos_vel, h, e = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, context.body.mu)
             poses = pos_vel[:3]
             vels = pos_vel[3:6]
         return {'pos': np.atleast_2d(poses), 
                 'vel': np.atleast_2d(vels), 
                 'axis': h/np.linalg.norm(h)}
     
-    def get_ge(self, Xi, Ui, T_sum, solver: "Solver") -> Dict:
+    def get_ge(self, Xi, Ui, T_sum, context: "SolverContext") -> Dict:
         if self.ν is not None:
             return {"g": [], "e": []}
         else:
@@ -336,8 +336,8 @@ class KeplerianBound(BoundaryObj):
             pos = ca.vertcat(x, y, z)
             vel = ca.vertcat(vx, vy, vz)
             h_curr = ca.cross(pos, vel)
-            e_curr = ca.cross(vel, h_curr)/solver.body.mu - pos/ca.norm_2(pos)
-            _, h_T, e_T = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, 0, solver.body.mu)
+            e_curr = ca.cross(vel, h_curr)/context.body.mu - pos/ca.norm_2(pos)
+            _, h_T, e_T = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, 0, context.body.mu)
             g = []
             e = []
             for i in range(0, 3):
@@ -346,7 +346,7 @@ class KeplerianBound(BoundaryObj):
                 e += [True, True]
             return {"g": g, "e": e}
         
-    def get_gb(self, solver: "Solver") -> Dict:
+    def get_gb(self, context: "SolverContext") -> Dict:
         """
         Returns constraints and their bounds.
         
@@ -359,10 +359,10 @@ class KeplerianBound(BoundaryObj):
         if self.ν is not None:
             return {"ubg": [], "lbg": []}
         else:
-            tol = solver.config.constraints_tol
+            tol = context.config.constraints_tol
             return {"ubg": 6*[tol], "lbg": 6*[-tol]}
         
-    def get_xb(self, solver: "Solver") -> Dict:
+    def get_xb(self, context: "SolverContext") -> Dict:
         """
         Returns:
             dict of lists: {ubx, lbx} -- the upper and lower bounds on the state vector.
@@ -372,16 +372,16 @@ class KeplerianBound(BoundaryObj):
             ubx = []
             lbx = []
             for i in range(6):
-                coord_func = lambda ν: kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν[0], solver.body.mu)[0][i]
+                coord_func = lambda ν: kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, ν[0], context.body.mu)[0][i]
                 min_val, max_val = _optimize_extreme(coord_func, [ν_range])
                 lbx.append(min_val)
                 ubx.append(max_val)
             return {"ubx": ubx, "lbx": lbx}
 
         else:
-            pos_vel, _, _ = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, solver.body.mu)
+            pos_vel, _, _ = kep_to_state(self.e, self.a, self.i, self.ω, self.Ω, self.ν, context.body.mu)
             return {"ubx": pos_vel.tolist(), "lbx": pos_vel.tolist()}
         
-    def get_ub(self, solver: "Solver"):
-        return StateBound.get_ub(self, solver)
+    def get_ub(self, context: "SolverContext"):
+        return StateBound.get_ub(self, context)
         
