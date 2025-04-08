@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from skimage.transform import resize
 from .functions import *
 import os
-from .solver import Solver, Solution
+from .solver import Solver, StageSolution
 from .setup import Body
 from .boundary_objects import *
 from typing import List, Dict
@@ -469,15 +469,15 @@ def plot_solutions(solver: Solver,
     for idx in indices:
         if show_actual_orbit:
             if solver.config.landing:
-                pos_vel = solver.sols[idx][0].X[0][1:7]
+                pos_vel = solver.stage_sols[idx][0].X[0][1:7]
             else:
-                pos_vel = solver.sols[idx][-1].X[-1][1:7]
+                pos_vel = solver.stage_sols[idx][-1].X[-1][1:7]
             e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(np.array(pos_vel), solver.body.mu)
             fig = plot_orbit(fig, e, a, i, ω, Ω, solver.body.mu)
 
         if colorscale == 'vel':
-            cmin = min([np.min(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.sols[idx]])
-            cmax = max([np.max(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.sols[idx]])
+            cmin = min([np.min(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.stage_sols[idx]])
+            cmax = max([np.max(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.stage_sols[idx]])
         elif colorscale == 'f':
             cmin = 0
             cmax = 1
@@ -486,7 +486,7 @@ def plot_solutions(solver: Solver,
             cmax = 1
 
         for k in range(0, solver.nstages):
-            sol = solver.sols[idx][k]
+            sol = solver.stage_sols[idx][k]
             f_min_constr = solver.constraints[k].f_min
             f_min = f_min_constr.value if f_min_constr.enabled and f_min_constr.value is not None else 0
 
@@ -510,12 +510,12 @@ def plot_solutions(solver: Solver,
     return fig
 
 # These _functions are kind of clunky someone should do a better job
-def _get_cumulative_times(sols: List[Solution]) -> np.ndarray:
+def _get_cumulative_times(sols: List[StageSolution]) -> np.ndarray:
     T = [sol.t[-1] for sol in sols]
     T_cum = np.concatenate(([0], np.cumsum(T)))
     return T_cum
 
-def _stack_time(sols: List[Solution]) -> np.ndarray:
+def _stack_time(sols: List[StageSolution]) -> np.ndarray:
     T_cum = 0
     t = np.zeros(1)
     for sol in sols:
@@ -524,7 +524,7 @@ def _stack_time(sols: List[Solution]) -> np.ndarray:
         T_cum += stage_t[-1]
     return t
 
-def _stack_data(sols: List[Solution]) -> tuple[np.ndarray]:
+def _stack_data(sols: List[StageSolution]) -> tuple[np.ndarray]:
     u = np.vstack([sol.U for sol in sols])
     x = np.vstack([sol.X for sol in sols])
     return u, x
@@ -539,15 +539,15 @@ def plot_throttle(solver: Solver, indices=[-1]):
 
     for idx in indices:
         # Stack all control vectors for this solution index
-        u, x = _stack_data(solver.sols[idx])
+        u, x = _stack_data(solver.stage_sols[idx])
         u = np.repeat(u, 2, axis=0)
-        t = _stack_time(solver.sols[idx])
+        t = _stack_time(solver.stage_sols[idx])
         tu = np.concatenate(([t[0]], np.repeat(t[1:-1], 2), [t[-1]]))
         f_eff = np.empty(sum(solver.N))
-        stage_times = _get_cumulative_times(solver.sols[idx])
+        stage_times = _get_cumulative_times(solver.stage_sols[idx])
 
         # Loop over stages
-        for k, sol in enumerate(solver.sols[idx]):
+        for k, sol in enumerate(solver.stage_sols[idx]):
             # Compute effective throttle using the provided formula
             f_min = solver.constraints[k].f_min.value
             f_min = 0 if f_min is None or not solver.constraints[k].f_min.enabled else f_min
@@ -595,11 +595,11 @@ def plot_attitude(solver : Solver, indices=[-1]):
 
     for idx in indices:
         # Stack all control vectors for this solution index
-        u, x = _stack_data(solver.sols[idx])
+        u, x = _stack_data(solver.stage_sols[idx])
         u = np.repeat(u, 2, axis=0)
-        t = _stack_time(solver.sols[idx])
+        t = _stack_time(solver.stage_sols[idx])
         tu = np.concatenate(([t[0]], np.repeat(t[1:-1], 2), [t[-1]]))
-        stage_times = _get_cumulative_times(solver.sols[idx])
+        stage_times = _get_cumulative_times(solver.stage_sols[idx])
 
         # Draw vertical dashed lines to separate stages
         for tl in stage_times[1:-1]:
@@ -638,14 +638,14 @@ def plot_control_rates(solver: Solver, indices=[-1]):
     fig, axs = plt.subplots(3, 1, figsize=(10, 9))
     plt.ion()
     for idx in indices:
-        t = _stack_time(solver.sols[idx])    # kN + 1
+        t = _stack_time(solver.stage_sols[idx])    # kN + 1
         t_mid = (t[1:] + t[:-1])/2           # kN
         dt = np.diff(t_mid)                  # kN - 1
-        u, x = _stack_data(solver.sols[idx]) # kN
+        u, x = _stack_data(solver.stage_sols[idx]) # kN
         du = np.diff(u, axis=0)              # kN - 1
         r = np.repeat(du[:, 1]/dt * np.cos((u[:-1, 2] + u[1:, 2])/2), 2)
         q = np.repeat(du[:, 2]/dt, 2)
-        stage_times = _get_cumulative_times(solver.sols[idx])
+        stage_times = _get_cumulative_times(solver.stage_sols[idx])
         # for f we only care aboute the N - 1 within each stage (f across stages doesn't matter)
         # N = 3
         # u  = [0, 1, 2 | 3, 4, 5 | 6, 7, 8] # kN
@@ -732,9 +732,9 @@ def plot_qalpha(solver: Solver, indices=[-1]):
     fig, axs = plt.subplots(2, 1, figsize=(10, 6))
     plt.ion()
     for idx in indices:
-        t = _stack_time(solver.sols[idx]) # kN + 1
-        stage_times = _get_cumulative_times(solver.sols[idx])
-        u, x = _stack_data(solver.sols[idx])
+        t = _stack_time(solver.stage_sols[idx]) # kN + 1
+        stage_times = _get_cumulative_times(solver.stage_sols[idx])
+        u, x = _stack_data(solver.stage_sols[idx])
         print(f'{u.shape = }')
         N_cum = np.cumsum(solver.N) + np.arange(0, solver.nstages)
         x = np.delete(x, N_cum[:-1], axis=0)
