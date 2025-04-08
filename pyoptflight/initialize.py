@@ -1,15 +1,17 @@
 from .functions import *
 from .setup import *
 from .boundary_objects import *
-from .solver import Solution, Solver
+if TYPE_CHECKING:
+    from .solver import SolverContext
+from .solver import StageSolution
 from typing import List, Callable
 import time
 
-def _fix_states(solver: Solver, npoints=250, sep_angle=np.pi/2):
+def _fix_states(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, npoints=250, sep_angle=np.pi/2):
     npoints = 250 if npoints is None else npoints
     sep_angle = np.pi/2 if sep_angle is None else sep_angle
-    x0_data = solver.x0.get_x0s(solver, npoints)
-    xf_data = solver.xf.get_x0s(solver, npoints)
+    x0_data = x0.get_x0s(context, npoints)
+    xf_data = xf.get_x0s(context, npoints)
     x0_points = x0_data['pos']
     xf_points = xf_data['pos']
     x0_axis = x0_data['axis']
@@ -26,7 +28,7 @@ def _fix_states(solver: Solver, npoints=250, sep_angle=np.pi/2):
                 xij_axis = np.zeros((3))
             else:
                 xij_axis /= np.linalg.norm(xij_axis)
-            if solver.config.landing:
+            if context.config.landing:
                 h_angle = np.arccos(max(min(np.dot(xij_axis, x0_axis), 1), -1))
             else:
                 h_angle = np.arccos(max(min(np.dot(xij_axis, xf_axis), 1), -1)) # angle between target plane and plane
@@ -45,21 +47,21 @@ def _fix_states(solver: Solver, npoints=250, sep_angle=np.pi/2):
                    'vel': xf_data['vel'][min_ij[1]],
                    'axis': xf_data['axis']}}
 
-def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
+def _linear_methods(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, get_pos: Callable, opts: dict = {}):
     ### WHERE get_pos(t, p0, p1, v0, v1)
 
-    x_data = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle'))
+    x_data = _fix_states(context, x0, xf, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle'))
 
     ### PREP ###
     spacing = opts.get('spacing', 'T_init')
     if spacing == 'equal':
-        seg_props = np.ones((solver.nstages))/solver.nstages
+        seg_props = np.ones((context.nstages))/context.nstages
     elif spacing == 'dV':
-        dV_stages = np.array([0.5*9.81e-3*(stage.prop.Isp_vac + stage.prop.Isp_SL)*np.log(stage.m_0/stage.m_f) for stage in solver.stages])
+        dV_stages = np.array([0.5*9.81e-3*(stage.prop.Isp_vac + stage.prop.Isp_SL)*np.log(stage.m_0/stage.m_f) for stage in context.stages])
         dV_available = np.sum(dV_stages)
         seg_props = dV_stages/dV_available
     elif spacing == 'T_init':
-        seg_props = np.array(solver.T_init)/solver.T
+        seg_props = np.array(context.T_init)/context.T_sum
     else:
         raise Exception(f"Spacing {spacing} does not exist. Choose from 'equal', 'dV', or T_init (default).")
     
@@ -78,14 +80,14 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
     # Determine the desired arc-length boundaries for each segment.
     seg_lengths = total_length * seg_props  # each segment’s arc length
     boundaries = np.concatenate(([0], np.cumsum(seg_lengths)))
-    seg_times = np.array(solver.T) * seg_props   # allocated time for each segment
+    seg_times = np.array(context.T_sum) * seg_props   # allocated time for each segment
 
     sols = []  # list to hold the solution for each stage/segment
-    for k, stage in enumerate(solver.stages):
+    for k, stage in enumerate(context.stages):
         seg_start = boundaries[k]
         seg_end   = boundaries[k+1]
         # Equally spaced arc-length positions for this segment.
-        seg_arc_positions = np.linspace(seg_start, seg_end, solver.N[k] + 1)
+        seg_arc_positions = np.linspace(seg_start, seg_end, context.N[k] + 1)
         # Invert the mapping: find the corresponding t values from the cumulative arc-length.
         seg_t = np.interp(seg_arc_positions, cum_length, ts)
         
@@ -100,11 +102,11 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
         seg_velocities = []
         seg_controls = []
         # Compute the velocity (and control) at each point from the finite-difference tangent.
-        for j in range(solver.N[k] + 1):
-            if j < solver.N[k]:
+        for j in range(context.N[k] + 1):
+            if j < context.N[k]:
                 diff = seg_positions[j + 1] - seg_positions[j]
                 # Compute a control vector (example: scaled version of the negative/positive direction).
-                if solver.config.landing:
+                if context.config.landing:
                     ctrl_dir = -dir
                 else:
                     ctrl_dir = dir
@@ -119,24 +121,24 @@ def _linear_methods(solver: Solver, get_pos: Callable, opts: dict = {}):
         
         # Compute the mass at each point by linear interpolation between the stage's initial and final masses.
         seg_masses = []
-        for t_lin in np.linspace(0, 1, solver.N[k] + 1):
+        for t_lin in np.linspace(0, 1, context.N[k] + 1):
             seg_masses.append((1 - t_lin) * stage.m_0 + t_lin * stage.m_f)
 
-        seg_time = np.linspace(0, seg_times[k], solver.N[k]+1)
+        # seg_time = np.linspace(0, seg_times[k], context.N[k]+1)
 
         seg_velocities  = np.array(seg_velocities)
         seg_controls = np.array(seg_controls)
         seg_masses = np.array(seg_masses)
 
-        sol = Solution(X=np.block([np.vstack(seg_masses), seg_positions, seg_velocities]).tolist(),
+        sol = StageSolution(X=np.block([np.vstack(seg_masses), seg_positions, seg_velocities]).tolist(),
                        U=seg_controls.tolist(),
                        stage=k+1,
-                       t=seg_time.tolist(), 
+                       T=seg_times[k],
                        )
         sols.append(sol)
     return sols
 
-def linear_interpolation(solver: Solver, opts: dict = {}):
+def linear_interpolation(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, opts: dict = {}):
     def get_pos(t, p0, p1, v0, v1):
         r0, r1 = np.linalg.norm(p0), np.linalg.norm(p1)
         r = (1-t)*r0 + t*r1
@@ -144,10 +146,10 @@ def linear_interpolation(solver: Solver, opts: dict = {}):
         d /= np.linalg.norm(d)
         return r*d
     
-    sols = _linear_methods(solver, get_pos, opts)
+    sols = _linear_methods(context, x0, xf, get_pos, opts)
     return {'sols': sols, 'status': None, 'success': True, 'iter_count': 0}
 
-def cubic_bezier_spline(solver: Solver, opts: dict = {}):
+def cubic_bezier_spline(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, opts: dict = {}):
     def get_pos(t, p0, p3, v0, v1):
         v0_mag, v1_mag = np.linalg.norm(v0), np.linalg.norm(v1)
         u0 = v0 / v0_mag
@@ -167,13 +169,13 @@ def cubic_bezier_spline(solver: Solver, opts: dict = {}):
 
         return r*pos/np.linalg.norm(pos)
     
-    sols = _linear_methods(solver, get_pos, opts)
+    sols = _linear_methods(context, x0, xf, get_pos, opts)
     return {'sols': sols, 'status': None, 'success': True, 'iter_count': 0}
 
-def gravity_turn(solver: Solver, opts: dict = {}):
+def gravity_turn(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, opts: dict = {}):
     def rotate(vec, axis, angle):
         return vec*np.cos(angle) + np.cross(axis, vec)*np.sin(angle) + axis*np.dot(axis, vec)*(1 - np.cos(angle))
-    if solver.config.landing:
+    if context.config.landing:
         raise NotImplementedError("Landing not possible with this method.")
 
     #############
@@ -182,7 +184,7 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     ### MULTISTAGE SETUP
     ### DETERMINE FIXED STATES GUESS ###
-    x_data = _fix_states(solver, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle')) # Init
+    x_data = _fix_states(context, x0, xf, npoints=opts.get('npoints'), sep_angle=opts.get('sep_angle')) # Init
     x0_pos, x0_vel, x0_axis = x_data['x0']['pos'], x_data['x0']['vel'], x_data['x0']['axis']
     xf_pos, xf_vel, xf_axis = x_data['xf']['pos'], x_data['xf']['vel'], x_data['xf']['axis']
     rot_angle = np.arccos(np.dot(xf_axis, x0_pos)/np.linalg.norm(x0_pos)) # Angle between xf plane normal an x0
@@ -201,12 +203,12 @@ def gravity_turn(solver: Solver, opts: dict = {}):
     ### COMPUTE INTIALS FOR GTRUN SOLVER ###
     v_init = np.linalg.norm(x0p_vel)
     beta_init = 0.05*ca.pi
-    h_init = np.linalg.norm(x0p_pos) - solver.body.r_0
+    h_init = np.linalg.norm(x0p_pos) - context.body.r_0
     phi_init = np.arctan2(x0p_pos[1], x0p_pos[0])
 
     v_T = np.linalg.norm(xfp_vel)
     beta_T = np.arccos(np.dot(xfp_pos, xfp_vel)/(np.linalg.norm(xfp_pos)*np.linalg.norm(xfp_vel)))
-    h_T = np.linalg.norm(xfp_pos) - solver.body.r_0
+    h_T = np.linalg.norm(xfp_pos) - context.body.r_0
     phi_T = np.arctan2(xfp_pos[1], xfp_pos[0])
     
     #######################
@@ -219,18 +221,18 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     nx = x.size1() # Number of states (5)
     nu = u.size1() # Number of control vars (1)
-    npar = solver.nstages # One time variable per stage
+    npar = context.nstages # One time variable per stage
 
     # Decision variables V has arangment [T0...Tk, U00...U0N,...,Uk0...UkN, X00...X0N+1,...,Xk0...XkN+1]
-    V = ca.MX.sym('X', npar + solver.Nu*nu + solver.Nx*nx)
+    V = ca.MX.sym('X', npar + context.Nu*nu + context.Nx*nx)
     # Each stages X seperated out shape(nstages, (N+1), nx)
-    X = [[V[npar + solver.Nu*nu + nx*(sum(solver.N[0:k]) + k) + i*nx : npar + solver.Nu*nu + nx*(sum(solver.N[0:k]) + k) + (i+1)*nx] 
-         for i in range(0, solver.N[k]+1)] 
-         for k in range(0, solver.nstages)]
+    X = [[V[npar + context.Nu*nu + nx*(sum(context.N[0:k]) + k) + i*nx : npar + context.Nu*nu + nx*(sum(context.N[0:k]) + k) + (i+1)*nx] 
+         for i in range(0, context.N[k]+1)] 
+         for k in range(0, context.nstages)]
     # All stages U lumped together: shape(nstages, N, nu)
-    U = [[V[npar + nu*sum(solver.N[0:k]) + i*nu : npar + nu*sum(solver.N[0:k]) + (i+1)*nu] 
-         for i in range(0, solver.N[k])]
-         for k in range(0, solver.nstages)]
+    U = [[V[npar + nu*sum(context.N[0:k]) + i*nu : npar + nu*sum(context.N[0:k]) + (i+1)*nu] 
+         for i in range(0, context.N[k])]
+         for k in range(0, context.nstages)]
     
     ##################
     ### INITIALIZE ###
@@ -242,36 +244,36 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     u_min, u_max, u_init = [0.0], [1.0], [0.5]
 
-    x0_min = [solver.stages[0].m_0, v_init, 0.0, h_init, phi_init]
-    x0_max = [solver.stages[0].m_0, v_init, 0.5 * ca.pi, h_init, phi_init]
-    x0_init = [solver.stages[0].m_0, v_init, beta_init, h_init, phi_init]
+    x0_min = [context.stages[0].m_0, v_init, 0.0, h_init, phi_init]
+    x0_max = [context.stages[0].m_0, v_init, 0.5 * ca.pi, h_init, phi_init]
+    x0_init = [context.stages[0].m_0, v_init, beta_init, h_init, phi_init]
     
-    xf_min = [solver.stages[-1].m_f, v_T, beta_T, h_T, 0.0]
-    xf_max = [solver.stages[-1].m_0, v_T, beta_T, h_T, ca.inf]
-    xf_init = [solver.stages[-1].m_f, v_T, beta_T, h_T, phi_T]
+    xf_min = [context.stages[-1].m_f, v_T, beta_T, h_T, 0.0]
+    xf_max = [context.stages[-1].m_0, v_T, beta_T, h_T, ca.inf]
+    xf_init = [context.stages[-1].m_f, v_T, beta_T, h_T, phi_T]
 
-    x0 = solver.T_init + solver.Nu*u_init
-    lbx = solver.T_min + solver.Nu*u_min
-    ubx = solver.T_max + solver.Nu*u_max
+    x0 = context.T_init + context.Nu*u_init
+    lbx = context.T_min + context.Nu*u_min
+    ubx = context.T_max + context.Nu*u_max
 
     # Linear interpolation between x0_init and xf_init for all stages, duplicates excluded
     x_init = [
-        i/(solver.Nx-1)*np.array(xf_init) + (1 - i/(solver.Nx-1))*np.array(x0_init)
-        for i in range(0, solver.Nx)
+        i/(context.Nx-1)*np.array(xf_init) + (1 - i/(context.Nx-1))*np.array(x0_init)
+        for i in range(0, context.Nx)
         ]
 
     ########################
     ### BEGIN STAGE LOOP ###
     ########################
-    for k, stage in enumerate(solver.stages):
+    for k, stage in enumerate(context.stages):
         # EOMs
         F = stage.prop.F_SL * u
-        F_drag = 0.5 * stage.aero.A_ref * stage.aero.C_D * solver.body.atm.rho_0 * ca.exp(-h / solver.body.atm.H) * v ** 2
-        r = h + solver.body.r_0
-        g = solver.body.g_0 * (solver.body.r_0 / r) ** 2
+        F_drag = 0.5 * stage.aero.A_ref * stage.aero.C_D * context.body.atm.rho_0 * ca.exp(-h / context.body.atm.H) * v ** 2
+        r = h + context.body.r_0
+        g = context.body.g_0 * (context.body.r_0 / r) ** 2
         v_phi = v * ca.sin(beta)
         vr = v * ca.cos(beta)
-        Isp = stage.prop.Isp_vac + (stage.prop.Isp_SL - stage.prop.Isp_vac) * ca.exp(-h / solver.body.atm.H)
+        Isp = stage.prop.Isp_vac + (stage.prop.Isp_SL - stage.prop.Isp_vac) * ca.exp(-h / context.body.atm.H)
 
         # Build symbolic expressions for ODE right hand side
         m_dot = -(F / (Isp * 9.81e-3))
@@ -282,18 +284,18 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
         # Create integrator that works from 0 to parameterized dt #
         ode = ca.vertcat(m_dot, v_dot, beta_dot, h_dot, phi_dot)
-        dae = {'x': x, 'p': ca.vertcat(u, T), 'ode': T/solver.N[k] * ode}
+        dae = {'x': x, 'p': ca.vertcat(u, T), 'ode': T/context.N[k] * ode}
         int_ops = {'nonlinear_solver_iteration': 'functional'}
         I = ca.integrator('I', 'cvodes', dae, 0.0, 1.0, int_ops)
 
         # Integrate from 0 to N for the given stage k and enforce EOMs
-        for i in range(0, solver.N[k]):
+        for i in range(0, context.N[k]):
             next_x = I(x0=X[k][i], p=ca.vertcat(U[k][i], V[k]))
             G.append(next_x['xf'] - X[k][i+1]) # we will constrain this part of G to be == 0
             lbg += nx*[0]
             ubg += nx*[0]
 
-        if k+1 < solver.nstages: # If this is not the last stage
+        if k+1 < context.nstages: # If this is not the last stage
             G.append(X[k+1][0][1:] - X[k][-1][1:]) # Force equality between every part of state except mass during staging
             lbg += (nx-1)*[0]
             ubg += (nx-1)*[0]
@@ -305,9 +307,9 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
         # linearly interpolate between stage specific m_0 and m_f
         # combine with extracted state from x_init linear interpolation 
-        for i in range(0, solver.N[k]+1): # Construct x0, lbx, and ubx
-            m_init = i/solver.N[k]*stage.m_f + (1 - i/solver.N[k])*stage.m_0
-            x0 += [m_init, *x_init[i+k+sum(solver.N[0:k])][1:].tolist()]
+        for i in range(0, context.N[k]+1): # Construct x0, lbx, and ubx
+            m_init = i/context.N[k]*stage.m_f + (1 - i/context.N[k])*stage.m_0
+            x0 += [m_init, *x_init[i+k+sum(context.N[0:k])][1:].tolist()]
 
         if k+1 == 1: # if first stage
             lbx += x0_min
@@ -316,10 +318,10 @@ def gravity_turn(solver: Solver, opts: dict = {}):
             lbx += [stage.m_0] + x_min[1:]
             ubx += [stage.m_0] + x_max[1:]
 
-        lbx += (solver.N[k]-1)*x_min
-        ubx += (solver.N[k]-1)*x_max
+        lbx += (context.N[k]-1)*x_min
+        ubx += (context.N[k]-1)*x_max
 
-        if k+1 == solver.nstages: # if last stage
+        if k+1 == context.nstages: # if last stage
             lbx += xf_min
             ubx += xf_max
         else:
@@ -328,7 +330,7 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     ### Create optimization func ###
     # Maximize remaining mass of last stage normalized by mass of last stage
-    opt_func = (solver.stages[-1].m_0 - X[-1][-1][0])/(solver.stages[-1].m_0 - solver.stages[-1].m_f)
+    opt_func = (context.stages[-1].m_0 - X[-1][-1][0])/(context.stages[-1].m_0 - context.stages[-1].m_f)
 
     #############
     ### SOLVE ###
@@ -336,8 +338,8 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
     nlp_opts = {'print_time': True, 'ipopt': 
-                {'tol': solver.config.solver_tol, 'print_level': 5, 
-                'max_iter': solver.config.max_iter, 'sb': 'yes'}}
+                {'tol': context.config.solver_tol, 'print_level': 5, 
+                'max_iter': context.config.max_iter, 'sb': 'yes'}}
     nlpsolver = ca.nlpsol('nlpsolver', 'ipopt', nlp, nlp_opts)
 
     result = nlpsolver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
@@ -348,8 +350,8 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     V_res = result['x']
     T_res = np.array(V_res[0 : npar]).flatten() # (1, npar)
-    u_res = np.array(V_res[npar : npar + solver.Nu*nu]).reshape((solver.Nu, nu)) # (Nu, nu)
-    x_res = np.array(V_res[npar + solver.Nu*nu : ]).reshape((solver.Nx, nx)) # (Nx, nx)
+    u_res = np.array(V_res[npar : npar + context.Nu*nu]).reshape((context.Nu, nu)) # (Nu, nu)
+    x_res = np.array(V_res[npar + context.Nu*nu : ]).reshape((context.Nx, nx)) # (Nx, nx)
 
     #########################
     ### PREPARE SOLUTIONS ###
@@ -357,17 +359,17 @@ def gravity_turn(solver: Solver, opts: dict = {}):
     #  0, 1, 2,    3, 4
     # [m, v, beta, h, phi]
     # Extend u_res by one at each stage inerface to be same length as x_res
-    ins_idx = np.cumsum(solver.N)
+    ins_idx = np.cumsum(context.N)
     ins_vals = np.vstack((u_res[ins_idx[:-1]], u_res[-1]))
     u_res = np.insert(u_res, ins_idx, ins_vals, axis=0) # u_res should now be size (sum(N+1), nu)
 
-    xp_r = x_res[:, 3] + solver.body.r_0
-    xp_theta = np.full((solver.Nx), np.pi/2)
+    xp_r = x_res[:, 3] + context.body.r_0
+    xp_theta = np.full((context.Nx), np.pi/2)
     xp_phi = x_res[:, 4]
     R_sph = np.array([
         [np.sin(xp_theta) * np.cos(xp_phi), np.sin(xp_theta) * np.sin(xp_phi), np.cos(xp_theta)],  # er
         [np.cos(xp_theta) * np.cos(xp_phi), np.cos(xp_theta) * np.sin(xp_phi), -np.sin(xp_theta)], # etheta
-        [-np.sin(xp_phi), np.cos(xp_phi), np.zeros(solver.Nx)]                                   # ephi
+        [-np.sin(xp_phi), np.cos(xp_phi), np.zeros(context.Nx)]                                   # ephi
     ]) # shape is (3, 3, Nx)
 
     R_sph = np.moveaxis(R_sph, -1, 0) # shape should now be (Nx, 3, 3)
@@ -376,7 +378,7 @@ def gravity_turn(solver: Solver, opts: dict = {}):
 
     xp_beta = x_res[:, 2]
     xp_vmag = x_res[:, 1]
-    xp_vsph = np.array([xp_vmag*np.cos(xp_beta), np.zeros(solver.Nx), xp_vmag*np.sin(xp_beta)]).T
+    xp_vsph = np.array([xp_vmag*np.cos(xp_beta), np.zeros(context.Nx), xp_vmag*np.sin(xp_beta)]).T
     R_sph_T = np.transpose(R_sph, axes=(0, 2, 1))
     xp_vel = np.matmul(R_sph_T, xp_vsph[..., np.newaxis]).squeeze(-1)    
 
@@ -387,7 +389,7 @@ def gravity_turn(solver: Solver, opts: dict = {}):
     # Skew if requested
     if opts.get('skew', False):
         print('Skewing start of trajectory.')
-        for i in range(0, solver.Nx):
+        for i in range(0, context.Nx):
             # Calculate rot_angle based on phi of 2D solution
             angle = (rot_angle-np.pi/2)*(1-(x_res[i, 4] - x_res[0, 4])/(x_res[-1, 4] - x_res[0, 4]))**opts.get('skew_strength', 5)
             x_pos[i] = rotate(vec=x_pos[i], axis=Yp, angle=angle)
@@ -396,20 +398,21 @@ def gravity_turn(solver: Solver, opts: dict = {}):
     x_ctrl = np.array([u_res.flatten(), np.arctan2(x_vel[:, 1], x_vel[:, 0]), np.arcsin(-x_vel[:, 2]/xp_vmag)]).T
 
     sols = []
-    for k in range(0, solver.nstages):
-        block_start = sum(solver.N[0:k]) + k # [k-1]*(N+1)
-        block_end = sum(solver.N[0:k+1]) + k+1 # k*(N+1)
+    for k in range(0, context.nstages):
+        block_start = sum(context.N[0:k]) + k # [k-1]*(N+1)
+        block_end = sum(context.N[0:k+1]) + k+1 # k*(N+1)
         m = x_res[block_start : block_end, 0]
         pos = x_pos[block_start: block_end]
         vel = x_vel[block_start: block_end]
         ctrl = x_ctrl[block_start: block_end - 1] # First N only
-        t, dt = np.linspace(0, T_res[k], solver.N[k]+1, retstep=True)
+        # t, dt = np.linspace(0, T_res[k], context.N[k]+1, retstep=True)
 
         sols.append(
-            Solution(X=np.block([m[:, np.newaxis], pos, vel]).tolist(),
+            StageSolution(X=np.block([m[:, np.newaxis], pos, vel]).tolist(),
                 U=ctrl.tolist(),
                 stage=k+1, 
-                t=t.tolist(),
+                # t=t.tolist(),
+                T = T_res[k]
                 )
             )
     return {'sols': sols, 
