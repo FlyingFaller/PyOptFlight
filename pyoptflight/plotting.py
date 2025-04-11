@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from skimage.transform import resize
 from .functions import *
 import os
-from .solver import Solver, StageSolution
+from .solver import Solver, StageSolution, FlightSolution, SolverContext
 from .setup import Body
 from .boundary_objects import *
 from typing import List, Dict
@@ -401,13 +401,13 @@ def add_background_stars(fig, skybox_rad=None, nstars_per_face=500,
     ez = (data_z - 0) / (2*skybox_rad)
 
     fig.update_layout(scene=dict(
-                    camera=dict(
-                        eye=dict(x = ex,
-                                y = ey,
-                                z = ez),
-                        )
-                    )
-                    )
+                        camera=dict(
+                            eye=dict(x = ex,
+                                     y = ey,
+                                     z = ez),
+                                     )
+                                    )
+                                )
 
     return fig
 
@@ -446,7 +446,7 @@ def plot_solutions(solver: Solver,
                    show_axis=False, 
                    size=(1000, 1000)):
     
-    fig = plot_celestial(solver.body,
+    fig = plot_celestial(solver.context.body,
                          show_stars=False,
                          hpx=hpx,
                          background_color=background_color,
@@ -454,26 +454,26 @@ def plot_solutions(solver: Solver,
                          size=size)
     
     if show_target_orbit:
-        if solver.config.landing:
-            pos = solver.x0.get_x0s(solver, npoints=1)['pos'][0]
-            vel = solver.x0.get_x0s(solver, npoints=1)['vel'][0]
+        if solver.context.config.landing:
+            pos = solver.x0.get_x0s(solver.context, npoints=1)['pos'][0]
+            vel = solver.x0.get_x0s(solver.context, npoints=1)['vel'][0]
         else:
-            pos = solver.xf.get_x0s(solver, npoints=1)['pos'][0]
-            vel = solver.xf.get_x0s(solver, npoints=1)['vel'][0]
-        e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(np.block([pos, vel]), solver.body.mu)
-        fig = plot_orbit(fig, e, a, i, ω, Ω, solver.body.mu)
+            pos = solver.xf.get_x0s(solver.context, npoints=1)['pos'][0]
+            vel = solver.xf.get_x0s(solver.context, npoints=1)['vel'][0]
+        e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(np.block([pos, vel]), solver.context.body.mu)
+        fig = plot_orbit(fig, e, a, i, ω, Ω, solver.context.body.mu)
 
 
 
     stage_colors = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet']
     for idx in indices:
         if show_actual_orbit:
-            if solver.config.landing:
+            if solver.context.config.landing:
                 pos_vel = solver.stage_sols[idx][0].X[0][1:7]
             else:
                 pos_vel = solver.stage_sols[idx][-1].X[-1][1:7]
-            e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(np.array(pos_vel), solver.body.mu)
-            fig = plot_orbit(fig, e, a, i, ω, Ω, solver.body.mu)
+            e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(np.array(pos_vel), solver.context.body.mu)
+            fig = plot_orbit(fig, e, a, i, ω, Ω, solver.context.body.mu)
 
         if colorscale == 'vel':
             cmin = min([np.min(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.stage_sols[idx]])
@@ -485,13 +485,13 @@ def plot_solutions(solver: Solver,
             cmin = 0
             cmax = 1
 
-        for k in range(0, solver.nstages):
+        for k in range(0, solver.context.nstages):
             sol = solver.stage_sols[idx][k]
             f_min_constr = solver.constraints[k].f_min
             f_min = f_min_constr.value if f_min_constr.enabled and f_min_constr.value is not None else 0
 
             U = np.array(sol.U)
-            U[:, 0] = U[:, 0] - U[:, 0]*np.maximum(0, np.minimum(1, (f_min - U[:, 0])/solver.delta))
+            U[:, 0] = U[:, 0] - U[:, 0]*np.maximum(0, np.minimum(1, (f_min - U[:, 0])/solver.context.delta))
 
             fig = plot_trajectory(fig, 
                                   np.array(sol.X)[:, 1:4],
@@ -509,292 +509,214 @@ def plot_solutions(solver: Solver,
 
     return fig
 
-# These _functions are kind of clunky someone should do a better job
-def _get_cumulative_times(sols: List[StageSolution]) -> np.ndarray:
-    T = [sol.t[-1] for sol in sols]
-    T_cum = np.concatenate(([0], np.cumsum(T)))
-    return T_cum
-
-def _stack_time(sols: List[StageSolution]) -> np.ndarray:
-    T_cum = 0
-    t = np.zeros(1)
-    for sol in sols:
-        stage_t = np.array(sol.t)
-        t = np.concatenate((t, stage_t[1:] + T_cum))
-        T_cum += stage_t[-1]
-    return t
-
-def _stack_data(sols: List[StageSolution]) -> tuple[np.ndarray]:
-    u = np.vstack([sol.U for sol in sols])
-    x = np.vstack([sol.X for sol in sols])
-    return u, x
-
-def plot_throttle(solver: Solver, indices=[-1]):
-    """
-    Plot throttle controls: f, effective throttle (f_eff), and the minimum thrust (f_min)
-    over time. Vertical dashed lines indicate stage separations.
-    """
-    fig, ax = plt.subplots(figsize=(10, 3))
-    plt.ion()
-
-    for idx in indices:
-        # Stack all control vectors for this solution index
-        u, x = _stack_data(solver.stage_sols[idx])
-        u = np.repeat(u, 2, axis=0)
-        t = _stack_time(solver.stage_sols[idx])
-        tu = np.concatenate(([t[0]], np.repeat(t[1:-1], 2), [t[-1]]))
-        f_eff = np.empty(sum(solver.N))
-        stage_times = _get_cumulative_times(solver.stage_sols[idx])
-
-        # Loop over stages
-        for k, sol in enumerate(solver.stage_sols[idx]):
-            # Compute effective throttle using the provided formula
-            f_min = solver.constraints[k].f_min.value
-            f_min = 0 if f_min is None or not solver.constraints[k].f_min.enabled else f_min
-            K = 500
-            start = sum(solver.N[:k])
-            end = sum(solver.N[:k+1])
-            f = np.array(sol.U)[:, 0]
-            f_eff[start:end] = f - f*np.maximum(0, np.minimum(1, (f_min - f)/solver.delta))
-            # f_eff[start:end] = f / (1 + np.exp(-K * (f - f_min)))
-
-        # Repeat arrays for a "step" plotting effect
-        f_eff = np.repeat(f_eff, 2)
-        label_flag = False
-        for k in range(solver.nstages):
-            f_min = solver.constraints[k].f_min.value
-            if solver.constraints[k].f_min.enabled and f_min is not None:
-                label = None if label_flag else '$f_\\text{min}$'
-                ax.hlines(y=f_min, xmin=stage_times[k], xmax=stage_times[k+1], color='red', linestyle='-.', label=label)
-                label_flag = True
-
-        # Draw vertical dashed lines to separate stages
-        for tl in stage_times[1:-1]:
-            ax.axvline(tl, color='gray', linestyle='--')
-
-        # Plot the raw throttle and effective throttle
-        ax.plot(tu, u[:, 0], label='$f$', linewidth=3)
-        ax.plot(tu, f_eff, label='$f_\\text{eff}$', linestyle=':', linewidth=3)
-
-    ax.set_xlabel('Time [s]')
-    ax.set_ylabel('Throttle [%]')
-    ax.set_title('Throttle vs Time')
-    ax.legend()
-    ax.grid(True)
-    fig.tight_layout()
-
-    return fig
-
-
-def plot_attitude(solver : Solver, indices=[-1]):
-    """
-    Plot attitude angles: psi and theta over time. Vertical dashed lines indicate stage separations.
-    """
-    fig, ax = plt.subplots(figsize=(10, 3))
-    plt.ion()
-
-    for idx in indices:
-        # Stack all control vectors for this solution index
-        u, x = _stack_data(solver.stage_sols[idx])
-        u = np.repeat(u, 2, axis=0)
-        t = _stack_time(solver.stage_sols[idx])
-        tu = np.concatenate(([t[0]], np.repeat(t[1:-1], 2), [t[-1]]))
-        stage_times = _get_cumulative_times(solver.stage_sols[idx])
-
-        # Draw vertical dashed lines to separate stages
-        for tl in stage_times[1:-1]:
-            ax.axvline(tl, color='gray', linestyle='--')
-
-        # Plot psi and theta
-        ax.plot(tu, u[:, 1], label='$\\psi$', linewidth=3)
-        ax.plot(tu, u[:, 2], label='$\\theta$', linewidth=3)
-
-
-    ax.set_xlabel('Time [s]')
-    ax.set_ylabel('Angle [rad]')
-    ax.set_title('Attitude vs Time')
-    ax.legend()
-    ax.grid(True)
-    fig.tight_layout()
-
-    return fig
-
-def plot_control_rates(solver: Solver, indices=[-1]):
-    def compare_constraints(const1, const2):
-        if const1.enabled and const2.enabled:
-            if const1.value is not None and const2.value is not None:
-                if const1.value <= const2.value: # constraint 1 is more restrictive
-                    return 1
-                else: 
-                    return 0
+def plot_flight_data(solver: Solver, plot_on_nodes=True, use_radians=True, index=-1) -> plt.Figure:
+    def split_segments(x, y):
+        segments = []
+        current_x, current_y = [], []
+        
+        for xi, yi in zip(x, y):
+            if yi is not None:
+                current_x.append(xi)
+                current_y.append(yi)
             else:
-                return 0
-        elif const1.enabled and const1.value is not None:
-            return 1 # constraint 1 is more restrictive
+                # if current segment is non-empty, append it as a tuple
+                if current_x:
+                    segments.append((current_x, current_y))
+                    current_x, current_y = [], []
+        # Append any segment that might be left over at the end.
+        if current_x:
+            segments.append((current_x, current_y))
+        return segments
+
+    data = solver.flight_sols[index]
+    stage_bound = np.cumsum(solver.context.N)[:-1] if plot_on_nodes else np.cumsum([sol.T for sol in solver.stage_sols[index]])[:-1]
+    x_label = 'Nodes' if plot_on_nodes else 'Time [s]'
+
+    fig, axes = plt.subplots(nrows=6, ncols=2, figsize=(20, 12))
+    axes = axes.flatten()
+
+    # plot stage boundaries on all subplots
+    for i, ax in enumerate(axes):
+        for bound in stage_bound:
+            ax.axvline(bound, linestyle='--', color='gray')
+
+    # 1: mass
+    x0 = data.mass.nodes if plot_on_nodes else data.mass.times
+    axes[0].plot(x0, data.mass.data, label='Mass', color='blue')
+    axes[0].set_title('Mass')
+    axes[0].set_xlabel(x_label)
+    axes[0].set_ylabel('Mass [tons]')
+    # axes[0].legend()
+    axes[0].grid(True)
+
+    # 2: f, f_eff, f_min
+    x1 = data.f.nodes if plot_on_nodes else data.f.times
+    f_min = split_segments(x=x1, y=data.f.constraint)
+    for i, (x, y) in enumerate(f_min):
+        axes[1].plot(x, y, color='red', linestyle='-.')
+    axes[1].plot(x1, data.f.data, label='$f$', color='blue')
+    axes[1].plot(x1, data.f_eff.data, label='$f_{eff}$', linestyle=':', color='green')
+    axes[1].set_title('Throttle')
+    axes[1].set_xlabel(x_label)
+    axes[1].set_ylabel('Throttle [%]')
+    axes[1].legend()
+    axes[1].grid(True)
+
+    # 3: F_max
+    x2 = data.F_max.nodes if plot_on_nodes else data.F_max.times
+    axes[2].plot(x2, data.F_max.data, label='$F_{max}$', color='blue')
+    axes[2].set_title('Max Thrust')
+    axes[2].set_xlabel(x_label)
+    axes[2].set_ylabel('Max Thrust [MN]')
+    # axes[2].legend()
+    axes[2].grid(True)
+
+    # 4: Isp
+    x3 = data.Isp.nodes if plot_on_nodes else data.Isp.times
+    axes[3].plot(x3, data.Isp.data, label='$Isp$', color='blue')
+    axes[3].set_title('Specific Impulse')
+    axes[3].set_xlabel(x_label)
+    axes[3].set_ylabel('Specific Impulse [s]')
+    # axes[3].legend()
+    axes[3].grid(True)
+
+    # 5: rho
+    x4 = data.rho.nodes if plot_on_nodes else data.rho.times
+    axes[4].plot(x4, data.rho.data, label='$\\rho$', color='blue')
+    axes[4].set_title('Density')
+    axes[4].set_xlabel(x_label)
+    axes[4].set_ylabel('Density [kg/m$^3$]')
+    # axes[4].legend()
+    axes[4].grid(True)
+
+    # 6: q, q_max
+    x5 = data.f.nodes if plot_on_nodes else data.f.times
+    q_max = split_segments(x=x5, y=data.q.constraint)
+    for i, (x, y) in enumerate(q_max):
+        axes[5].plot(x, y, color='red', linestyle='-.')
+    axes[5].plot(x5, data.f.data, label='$q$', color='blue')
+    axes[5].set_title('Dynamic Pressure')
+    axes[5].set_xlabel(x_label)
+    axes[5].set_ylabel('Dynamic Pressure [MPa]')
+    # axes[5].legend()
+    axes[5].grid(True)
+
+    # 7: alpha, alpha_max
+    x6 = data.alpha.nodes if plot_on_nodes else data.alpha.times
+    alpha_max = split_segments(x=x6, y=data.alpha.constraint)
+    for i, (x, y) in enumerate(alpha_max):
+        if use_radians:
+            axes[6].plot(x, np.array(y), color='red', linestyle='-.')
+            axes[6].plot(x, -np.array(y), color='red', linestyle='-.')
         else:
-            return 0
-                
+            axes[6].plot(x, np.rad2deg(y), color='red', linestyle='-.')
+            axes[6].plot(x, -np.rad2deg(y), color='red', linestyle='-.')
+    if use_radians:
+        axes[6].plot(x6, data.alpha.data, label='$\\alpha$', color='blue')
+    else:
+        axes[6].plot(x6, np.rad2deg(data.alpha.data), label='$\\alpha$', color='blue')
+    axes[6].set_title('Angle of Attack')
+    axes[6].set_xlabel(x_label)
+    if use_radians:
+        axes[6].set_ylabel('Angle of Attack [rad]')
+    else:
+        axes[6].set_ylabel('Angle of Attack [deg]')
+    # axes[6].legend()
+    axes[6].grid(True)
 
-    fig, axs = plt.subplots(3, 1, figsize=(10, 9))
-    plt.ion()
-    for idx in indices:
-        t = _stack_time(solver.stage_sols[idx])    # kN + 1
-        t_mid = (t[1:] + t[:-1])/2           # kN
-        dt = np.diff(t_mid)                  # kN - 1
-        u, x = _stack_data(solver.stage_sols[idx]) # kN
-        du = np.diff(u, axis=0)              # kN - 1
-        r = np.repeat(du[:, 1]/dt * np.cos((u[:-1, 2] + u[1:, 2])/2), 2)
-        q = np.repeat(du[:, 2]/dt, 2)
-        stage_times = _get_cumulative_times(solver.stage_sols[idx])
-        # for f we only care aboute the N - 1 within each stage (f across stages doesn't matter)
-        # N = 3
-        # u  = [0, 1, 2 | 3, 4, 5 | 6, 7, 8] # kN
-        # du =   [0, 1 |2|  3, 4 |5|  6, 7]  # kN - 1
-        label_flag = False
-        label_flag_r = False
-        label_flag_q = False
-        N_cum = np.concatenate(([0], np.cumsum(solver.N)))
-        for k in range(solver.nstages):
-            ## f
-            fk = du[N_cum[k]:N_cum[k+1]-1, 0]
-            dtk = dt[N_cum[k]:N_cum[k+1]-1]
-            dfdt_k = fk/dtk
-            dfdt_k = np.repeat(dfdt_k, 2) # 2N - 2
-            t_mid_k = t_mid[N_cum[k]:N_cum[k+1]] # N
-            t_mid_k = np.concatenate(([t_mid_k[0]], np.repeat(t_mid_k[1:-1], 2), [t_mid_k[-1]])) # 2N - 2
-            label = '$\\tau_{'+str(k+1)+'}$'
-            axs[0].plot(t_mid_k, dfdt_k, label=label, linewidth=3)
+    # 8: tau, tau_max
+    x7 = data.tau.nodes if plot_on_nodes else data.tau.times
+    tau_max = split_segments(x=x7, y=data.tau.constraint)
+    for i, (x, y) in enumerate(tau_max):
+        axes[7].plot(x, np.array(y), color='red', linestyle='-.')
+        axes[7].plot(x, -np.array(y), color='red', linestyle='-.')
+    axes[7].plot(x7, data.tau.data, label='$\\tau$', color='blue')
+    axes[7].set_title('Throttle Rate')
+    axes[7].set_xlabel(x_label)
+    axes[7].set_ylabel('Throttle Rate [%/s]')
+    # axes[7].legend()
+    axes[7].grid(True)
 
-            max_tau = solver.constraints[k].max_tau
-            if max_tau.enabled and max_tau.value is not None:
-                label = None if label_flag else '$\\tau_{max}$'
-                axs[0].hlines(y=max_tau.value, xmin=t_mid_k[0], xmax=t_mid_k[-1], color='red', linestyle='-.', label=label)
-                axs[0].hlines(y=-max_tau.value, xmin=t_mid_k[0], xmax=t_mid_k[-1], color='red', linestyle='-.', label=None)
-                label_flag = True
+    # 9: body_rate_y, body_rate_z, max_body_rate_y, max_body_rate_z
+    x8a = data.body_rate_y.nodes if plot_on_nodes else data.body_rate_y.times
+    x8b = data.body_rate_z.nodes if plot_on_nodes else data.body_rate_z.times
+    max_body_rate_y = split_segments(x=x8a, y=data.body_rate_y.constraint)
+    max_body_rate_z = split_segments(x=x8b, y=data.body_rate_z.constraint)
+    for i, (x, y) in enumerate(max_body_rate_y):
+        if use_radians:
+            axes[8].plot(x, np.array(y), color='red', linestyle='-.')
+            axes[8].plot(x, -np.array(y), color='red', linestyle='-.')
+        else:
+            axes[8].plot(x, np.rad2deg(y), color='red', linestyle='-.')
+            axes[8].plot(x, -np.rad2deg(y), color='red', linestyle='-.')
 
-            if k + 1 < solver.nstages: # if not last stage
-                max_r_0 = solver.constraints[k].max_body_rate_y
-                max_r_1 = solver.constraints[k+1].max_body_rate_y
-                xmax_r = t_mid[N_cum[k+1] -1 + compare_constraints(max_r_0, max_r_1)]
-                max_q_0 = solver.constraints[k].max_body_rate_z
-                max_q_1 = solver.constraints[k+1].max_body_rate_z
-                xmax_q = t_mid[N_cum[k+1] -1 + compare_constraints(max_q_0, max_q_1)]
-            else: # last stage
-                xmax_r = t_mid[-1]
-                xmax_q = t_mid[-1]
-            if k+1 > 1: # if not first stage
-                max_r_0 = solver.constraints[k-1].max_body_rate_y
-                max_r_1 = solver.constraints[k].max_body_rate_y
-                xmin_r = t_mid[N_cum[k] - compare_constraints(max_r_1, max_r_0)]
-                max_q_0 = solver.constraints[k-1].max_body_rate_z
-                max_q_1 = solver.constraints[k].max_body_rate_z
-                xmin_q = t_mid[N_cum[k] - compare_constraints(max_q_1, max_q_0)]
-            else: # first stage
-                xmin_r = t_mid[0]
-                xmin_q = t_mid[0]
+    for i, (x, y) in enumerate(max_body_rate_z):
+        if use_radians:
+            axes[8].plot(x, np.array(y), color='orange', linestyle='-.')
+            axes[8].plot(x, -np.array(y), color='orange', linestyle='-.')
+        else:
+            axes[8].plot(x, np.rad2deg(y), color='orange', linestyle='-.')
+            axes[8].plot(x, -np.rad2deg(y), color='orange', linestyle='-.')
 
-            max_r = solver.constraints[k].max_body_rate_y
-            if max_r.enabled and max_r.value is not None:
-                label = None if label_flag_r else '$r_{max}$'
-                axs[1].hlines(y=max_r.value, xmin=xmin_r, xmax=xmax_r, color='red', linestyle='-.', label=label)
-                axs[1].hlines(y=-max_r.value, xmin=xmin_r, xmax=xmax_r, color='red', linestyle='-.', label=None)
-                label_flag_r = True
+    axes[8].plot(x8a, data.body_rate_y.data, label='Body Rate $y$ ($q$)', color='blue')
+    axes[8].plot(x8b, data.body_rate_z.data, label='Body Rate $z$ ($r$)', color='green')
+    axes[8].set_title('Body Angular Rates')
+    axes[8].set_xlabel(x_label)
+    if use_radians:
+        axes[8].set_ylabel('Body Angular [rad/s]')
+    else:
+        axes[8].set_ylabel('Body Angular [deg/s]')
+    axes[8].legend()
+    axes[8].grid(True)
 
-            max_q = solver.constraints[k].max_body_rate_z
-            if max_q.enabled and max_q.value is not None:
-                label = None if label_flag_q else '$q_{max}$'
-                axs[2].hlines(y=max_q.value, xmin=xmin_q, xmax=xmax_q, color='red', linestyle='-.', label=label)
-                axs[2].hlines(y=-max_q.value, xmin=xmin_q, xmax=xmax_q, color='red', linestyle='-.', label=None)
-                label_flag_q = True
+    # 10: psi, theta
+    x9a = data.psi.nodes if plot_on_nodes else data.psi.times
+    x9b = data.theta.nodes if plot_on_nodes else data.theta.times
+    if use_radians:
+        axes[9].plot(x9a, data.psi.data, label='$\\psi$', color='blue')
+        axes[9].plot(x9b, data.theta.data, label='$\\theta$', color='green')
+    else:
+        axes[9].plot(x9a, np.rad2deg(data.psi.data), label='$\\psi$', color='blue')
+        axes[9].plot(x9b, np.rad2deg(data.theta.data), label='$\\theta$', color='green')
+    axes[9].set_title('Attitude')
+    axes[9].set_xlabel(x_label)
+    if use_radians:
+        axes[9].set_ylabel('Attitude [rad]')
+    else:
+        axes[9].set_ylabel('Attitude [deg]')
+    axes[9].legend()
+    axes[9].grid(True)
 
-        t_mid = np.concatenate(([t_mid[0]], np.repeat(t_mid[1:-1], 2), [t_mid[-1]]))
-        axs[1].plot(t_mid, r, label='$r$', linewidth=3)
-        axs[2].plot(t_mid, q, label='$q$', linewidth=3)
+    # 11: h
+    x10 = data.h.nodes if plot_on_nodes else data.h.times
+    axes[10].plot(x10, data.h.data, label='$h$', color='blue')
+    axes[10].set_title('Altitude')
+    axes[10].set_xlabel(x_label)
+    axes[10].set_ylabel('Altitude [km]')
+    # axes[10].legend()
+    axes[10].grid(True)
 
-        # draw vertical dashed lines to separate stages
-        for tl in stage_times[1:-1]:
-            axs[0].axvline(tl, color='gray', linestyle='--')
-            axs[1].axvline(tl, color='gray', linestyle='--')
-            axs[2].axvline(tl, color='gray', linestyle='--')
-
-        ylabels = ['$\\tau$ [%/s]', '$r$ [rad/s]', '$q$ [rad/s]']
-        titles = ['Thottle Rate', 'Body Rate $y$', 'Body Rate $z$']
-        for i, ax in enumerate(axs):
-            ax.set_xlabel('Time [s]')
-            ax.set_ylabel(ylabels[i])
-            ax.set_title(titles[i])
-            ax.legend()
-            ax.grid(True)
-        fig.tight_layout()
+    # 12: v_mag
+    x11 = data.vel.nodes if plot_on_nodes else data.vel.times
+    v_mag = np.sum(data.vel.data**2, axis=1)**0.5
+    axes[11].plot(x11, v_mag, label='$\\vert\\vert \\vec{v} \\vert\\vert$', color='blue')
+    axes[11].set_title('Velocity Magnitude')
+    axes[11].set_xlabel(x_label)
+    axes[11].set_ylabel('Velocity Magnitude [km/s]')
+    # axes[11].legend()
+    axes[11].grid(True)
+    # possible plots:
+    # 1: mass
+    # 2: f, f_eff, f_min
+    # 3: F_max
+    # 4: Isp
+    # 5: rho
+    # 6: q, q_max
+    # 7: alpha, alpha_max
+    # 8: tau, tau_max
+    # 9: body rates, body rates max
+    # 10: psi, theta
+    # 11: h
+    # 12: v_mag
+    fig.tight_layout()
     return fig
-
-def plot_qalpha(solver: Solver, indices=[-1]):
-    fig, axs = plt.subplots(2, 1, figsize=(10, 6))
-    plt.ion()
-    for idx in indices:
-        t = _stack_time(solver.stage_sols[idx]) # kN + 1
-        stage_times = _get_cumulative_times(solver.stage_sols[idx])
-        u, x = _stack_data(solver.stage_sols[idx])
-        print(f'{u.shape = }')
-        N_cum = np.cumsum(solver.N) + np.arange(0, solver.nstages)
-        x = np.delete(x, N_cum[:-1], axis=0)
-        px, py, pz = x[:, 1], x[:, 2], x[:, 3]
-        vx, vy, vz = x[:, 4], x[:, 5], x[:, 6]
-        psi, theta = u[:, 1], u[:, 2]
-        h = np.sqrt(px**2 + py**2 + pz**2) - solver.body.r_0
-        rho = solver.body.atm.rho_0*np.exp(-h/solver.body.atm.H)
-        # r = np.sqrt(px**2 + py**2 + pz**2)
-        v_rel = np.block([[vx + solver.body.omega_0*py], 
-                          [vy - solver.body.omega_0*px], 
-                          [vz]]).T
-        q = 0.5*rho*np.sum(v_rel**2, axis=1) # kN + 1
-        print(f'{v_rel[0] = }')
-        print(f'{vx[0], vy[0], vz[0] = }')
-        ebx = np.block([[np.cos(psi)*np.cos(theta)], 
-                        [np.sin(psi)*np.cos(theta)], 
-                        [-np.sin(theta)]]).T
-        print(f'{ebx[0] = }')
-        print(f'{ebx.shape = }')
-        print(f'{v_rel.shape = }')
-        dot0 = np.minimum(1, np.sum(ebx*v_rel[:-1], axis=1)/np.sqrt(np.sum((v_rel[:-1])**2, axis=1)))
-        dot1 = np.minimum(1, np.sum(ebx*v_rel[1:], axis=1)/np.sqrt(np.sum((v_rel[1:])**2, axis=1)))
-        alpha0 = np.arccos(dot0) #kN
-        alpha1 = np.arccos(dot1) #kN
-        alpha = np.empty(len(alpha0)+len(alpha1)) # 2kN
-        alpha[0::2] = alpha0
-        alpha[1::2] = alpha1
-        talpha = np.concatenate(([t[0]], np.repeat(t[1:-1], 2), [t[-1]]))
-        axs[0].plot(t, q, label = '$q$', linewidth=3)
-        axs[0].set_ylabel('Dynamic Pressure [MPa]')
-        axs[1].plot(talpha, np.rad2deg(alpha), label = '$\\alpha$', linewidth=3)
-        axs[1].set_ylabel('Angle of Attack [rad]')
-        for ax in axs:
-            ax.set_xlabel('Time [s]')
-            ax.legend()
-            ax.grid(True)
-        fig.tight_layout()
-    return fig
-
-
-
-        # need to calculate t midpoints
-        # need to calculate N-1 dudt using midpoints
-        # dudt's get plotted between t midpoints
-        # The most technically correct formulation is as follows:
-        # Given states x0, x1, x2, x3
-        # Given inputs   u0, u1, u2
-        # We calculate:    du0 du1
-        # dt01 = ((T01/N01)_01 + (T12/N12)_12)/2
-        # In most cases T01 = T12, N01 = N12 except at stage boundaries
-        # du0 = (u1 - u0)/dt01
-        # du1 = (u2 - u1)/dt12
-        # We don't actually constrain these directly we want to constraint body rates instead
-        # lb < dpsi0*cos((theta0 + theta1)/2) < ub
-        # lb < dtheta0 < ub
-        # lb < df0 < ub
-        # In full:
-        # lb < 2*(psi_i+1 - psi_i)/(Tki+1/Nki+1 + Tki/Nki)*cos(theta_i+1/2 + theta_i/2) < ub
-        # It may be reasonable to simplify this to:
-        # lb < (psi_i+1 - psi_i)/(Tki/Nki)*cos(theta_i) < ub
-        # This reduces the number of variable dependencies in the constraint but is less accurate esspecially 
-        # at stage boundaries.
