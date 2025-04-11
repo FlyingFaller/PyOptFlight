@@ -10,19 +10,19 @@ from .physics import StagePhysics
 @dataclass(repr=False)
 class SolverContext(AutoRepr):
     """Context object for the solver. Designed to be passed around to functions."""
-    body: "Body"                                  # Immutable
-    stages: list["Stage"]                         # Immutable
-    config: "SolverConfig"                        # Immutable
-    nstages: int = 0                              # Immutable
-    N: list[int] = field(default_factory=list)    # Immutable
-    T_init: list[float] = field(default_factory=list)  # Immutable
-    T_min: list[float] = field(default_factory=list)   # Immutable
-    T_max: list[float] = field(default_factory=list)   # Immutable
-    T_sum: float = 0.0                                # Mutable
-    Nx: int = 0                                   # Immutable
-    Nu: int = 0                                   # Immutable
-    use_atm: bool = False                         # Immutable
-    delta: float = 0.01                           # Immutable
+    body   : "Body"                                    # Immutable
+    stages : list["Stage"]                             # Immutable
+    config : "SolverConfig"                            # Immutable
+    nstages: int = 0                                   # Immutable
+    N      : list[int] = field(default_factory=list)   # Immutable
+    T_init : list[float] = field(default_factory=list) # Immutable
+    T_min  : list[float] = field(default_factory=list) # Immutable
+    T_max  : list[float] = field(default_factory=list) # Immutable
+    T_sum  : float = 0.0                               # Mutable
+    Nx     : int = 0                                   # Immutable
+    Nu     : int = 0                                   # Immutable
+    use_atm: bool = False                              # Immutable
+    delta  : float = 0.01                              # Immutable
 
     def __post_init__(self):
         # Assign T_init, T_min, T_max lists using global default in config or stage value
@@ -42,92 +42,140 @@ class SolverContext(AutoRepr):
 @dataclass(repr=False)
 class StageSolution(AutoRepr):
     """Obejct to store the soltuion(s)"""
-    X: list[List] ### self.config.N+1 x 7 List of Lists of state solutions
-    U: list[List] ### self.config.N x 3 List of Lists of control solutions
-    stage: int ### Stage number solution belongs to
-    T: float ### Time for this stage will replace T_init
+    X    : list[List] ### self.config.N+1 x 7 List of Lists of state solutions
+    U    : list[List] ### self.config.N x 3 List of Lists of control solutions
+    stage: int        ### Stage number solution belongs to
+    T    : float      ### Time for this stage will replace T_init
 
 class FlightSolution(AutoRepr):
     """Data computed after solving. Flight stats."""
     @dataclass(repr=False)
     class TimeSeriesData(AutoRepr):
-        data: np.ndarray
-        times: np.ndarray
-        nodes: np.ndarray
-    
+        data: np.ndarray = np.empty(0)
+        times: np.ndarray = np.empty(0)
+        nodes: np.ndarray = np.empty(0, dtype=int)
+        constraint: list = field(default_factory=list)
+        
+        def update(self, data: float|np.ndarray|list, time: float, node: int, constraint: float|None = None) -> None:
+            data_list: list = self.data.tolist()
+            data_list.append(data)
+            self.data = np.array(data_list)
+            self.times = np.concatenate((self.times, [time]))
+            self.nodes = np.concatenate((self.nodes, [node]))
+            self.constraint.append(constraint)
+            
     def __init__(self, sols: List[StageSolution], 
                  context: "SolverContext",
                  constraints: List[ConstraintSet]):
         
-        def stack_cont(arrays: List[np.ndarray]) -> np.ndarray:
-            result = arrays[0]
+        def stack(arrays) -> np.ndarray:
+            result = np.array(arrays[0])
             for i in range(1, len(arrays)):
                 result = np.concatenate((result, arrays[i][1:]))
             return result
         
-        def compute_phys(func_name: str, 
-                         args: List, 
-                         stage_bounds: List, 
-                         times: np.ndarray,
-                         nodes: np.ndarray,
-                         output_size=0):
-            if output_size == 0:
-                result = np.zeros((stage_bounds[-1]))
-            else:
-                result = np.zeros((stage_bounds[-1], output_size))
-            for k, stage in enumerate(context.stages):
-                if constraints[k].f_min.enabled and constraints[k].f_min.value is not None:
-                    f_min = constraints[k].f_min.value
-                else:
-                    f_min = 0
-                physics = StagePhysics(context, stage, f_min)
-                func = getattr(physics, func_name)
-                for i in range(stage_bounds[k], stage_bounds[k+1]):
-                    if output_size > 0:
-                        result[i] = np.array(func(*[arg[i] for arg in args])).flatten()
-                    else:
-                        result[i] = func(*[arg[i] for arg in args])
-            return self.TimeSeriesData(result, times, nodes)
+        self.stage_num   = self.TimeSeriesData() # kN+k
+        self.pos         = self.TimeSeriesData() # kN+1
+        self.vel         = self.TimeSeriesData() # kN+1
+        self.mass        = self.TimeSeriesData() # kN+k
+        self.f           = self.TimeSeriesData() # kN
+        self.psi         = self.TimeSeriesData() # kN
+        self.theta       = self.TimeSeriesData() # kN
+        self.h           = self.TimeSeriesData() # kN+1
+        self.f_eff       = self.TimeSeriesData() # kN
+        self.F_max       = self.TimeSeriesData() # kN
+        self.Isp         = self.TimeSeriesData() # kN+1
+        self.rho         = self.TimeSeriesData() # kN+1
+        self.g           = self.TimeSeriesData() # kN+1
+        self.wind        = self.TimeSeriesData() # kN+1
+        self.ebx         = self.TimeSeriesData() # kN
+        self.eby         = self.TimeSeriesData() # kN
+        self.ebz         = self.TimeSeriesData() # kN
+        self.q           = self.TimeSeriesData() # kN+1
+        self.alpha       = self.TimeSeriesData() # kN
+        self.tau         = self.TimeSeriesData() # kN-1
+        self.body_rate_y = self.TimeSeriesData() # kN-1
+        self.body_rate_z = self.TimeSeriesData() # kN-1
 
-
+        N  = context.N
         cum_T = np.concatenate(([0], np.cumsum([sol.T for sol in sols])))
-        cum_N = np.concatenate(([0], np.cumsum(context.N))) # stage boundaries by index
-        t_segs = [np.linspace(cum_T[i], cum_T[i+1], context.N[i]+1) for i in range(context.nstages)]
-        N_segs = [np.arange(cum_N[i], cum_N[i+1]+1) for i in range(context.nstages)]
-        t_cont = stack_cont(t_segs)
-        N_cont = stack_cont(N_segs)
-        t_disc = np.concatenate(t_segs)
-        N_disc = np.concatenate(N_segs)
-        X_cont = stack_cont([sol.X for sol in sols])
-        X_disc = np.concatenate([sol.X for sol in sols])
-        U_cont = np.concatenate([sol.U for sol in sols])
+        cum_N = np.concatenate(([0], np.cumsum(N))) # stage boundaries by index
+        sum_N = np.sum(N) # total number of nodes kN
+        nstages = context.nstages
+        stages = context.stages
+        cs_list = constraints
+        t_list = stack([np.linspace(cum_T[i], cum_T[i+1], N[i]+1) for i in range(nstages)])
+        N_list = stack([np.arange(cum_N[i], cum_N[i+1]+1) for i in range(nstages)])
+        X = stack([sol.X for sol in sols])
+        U = np.concatenate([sol.U for sol in sols])
 
-        self.stage_num = self.TimeSeriesData(np.concatenate([sols[i].stage*np.ones(context.N[i]+1) for i in range(context.nstages)]), t_disc, N_disc) # stage number
-        self.pos = self.TimeSeriesData(X_cont[:, 1:4], t_cont, N_cont) # px, py, pz
-        self.vel = self.TimeSeriesData(X_cont[:, 4:7], t_cont, N_cont) # vx, vy, vz
-        self.mass = self.TimeSeriesData(X_disc[:, 0], t_disc, N_disc)  # m
-        self.f = self.TimeSeriesData(U_cont[:, 0], t_cont[:-1], N_cont[:-1]) # f
-        self.psi = self.TimeSeriesData(U_cont[:, 1], t_cont[:-1], N_cont[:-1]) # psi
-        self.theta = self.TimeSeriesData(U_cont[:, 2], t_cont[:-1], N_cont[:-1]) # theta1
+        physics: List[StagePhysics] = []
+        for k in range(nstages):
+            f_min_constr = cs_list[k].f_min
+            if f_min_constr.enabled and f_min_constr.value is not None:
+                f_min = f_min_constr.value
+            else:
+                f_min = 0
+            physics.append(StagePhysics(context, stages[k], f_min))
 
-        cum_N_cont = np.copy(cum_N)
-        cum_N_cont[-1] += 1
-        self.h     = compute_phys('h',         [*X_cont[:, 1:4].T],   cum_N_cont, t_cont,      N_cont)
-        self.f_eff = compute_phys('f_eff',     [U_cont[:, 0]],        cum_N,      t_cont[:-1], N_cont[:-1])
-        self.F_max = compute_phys('F_max',     [*X_cont[:, 1:4].T],   cum_N_cont, t_cont,      N_cont)
-        self.Isp   = compute_phys('Isp',       [*X_cont[:, 1:4].T],   cum_N_cont, t_cont,      N_cont)
-        self.rho   = compute_phys('rho',       [*X_cont[:, 1:4].T],   cum_N_cont, t_cont,      N_cont)
-        self.g     = compute_phys('g',         [*X_cont[:, 1:4].T],   cum_N_cont, t_cont,      N_cont, 3)
-        self.wind  = compute_phys('wind',      [*X_cont[:, 1:4].T],   cum_N_cont, t_cont,      N_cont, 3)
-        self.v_rel = compute_phys('v_rel',     [*X_cont[:, 1:7].T],   cum_N_cont, t_cont,      N_cont, 3)
-        self.ebx   = compute_phys('ebx',       [*U_cont[:, 1:3].T],   cum_N,      t_cont[:-1], N_cont[:-1], 3)
-        self.eby   = compute_phys('eby',       [*U_cont[:, 1:3].T],   cum_N,      t_cont[:-1], N_cont[:-1], 3)
-        self.ebz   = compute_phys('ebz',       [*U_cont[:, 1:3].T],   cum_N,      t_cont[:-1], N_cont[:-1], 3)
-        self.q     = compute_phys('q',         [X_cont],              cum_N_cont, t_cont,      N_cont)
-        self.alpha = compute_phys('cos_alpha', [X_cont[:-1], U_cont], cum_N,      t_cont[:-1], N_cont[:-1])       
-        self.alpha.data = np.arccos(np.minimum(1, self.alpha.data)) # convert to angle
-        # tau?
-        # body rates?
+        for i in range(sum_N+1):
+            k = np.searchsorted(cum_N[:-1], i, side='right') - 1 # 'current' stage index, this breaks down at stage interfaces
+            stage_interface = i in cum_N[1:-1] # True if i is a stage interface node
+            first_node = i+1 == 1 # True if first node of loop 
+            last_node = i+1 == sum_N+1 # True if last node of loop
+            penult_node = i+1 == sum_N # True if second to last node of loop
+            t = t_list[i]
+            n = N_list[i]
+            sol = sols[k]
+
+            # constraints
+            max_cs = ConstraintSet.choose_max(cs_list[k], cs_list[k-1]) if stage_interface else cs_list[k]
+            f_min = cs_list[k].f_min.value if cs_list[k].f_min.enabled else None
+            max_alpha = cs_list[k].max_alpha.value if cs_list[k].max_alpha.enabled else None
+            max_tau = max_cs.max_tau.value if max_cs.max_tau.enabled else None
+            max_body_rate_y = max_cs.max_body_rate_y.value if max_cs.max_body_rate_y.enabled else None
+            max_body_rate_z = max_cs.max_body_rate_z.value if max_cs.max_body_rate_z.enabled else None
+            max_q = max_cs.max_q.value if max_cs.max_q.enabled else None
+            f_min = f_min if not (first_node or last_node or penult_node) else None
+            max_q = max_q if not (first_node or last_node) else None
+            max_alpha = max_alpha if not (first_node or last_node or penult_node) else None
+
+            # kN+1 nodes
+            self.pos.update(X[i][1:4], t, n)
+            self.vel.update(X[i][4:7], t, n)
+            self.h.update(float(physics[k].h(*X[i][1:4])), t, n)
+            self.Isp.update(float(physics[k].Isp(*X[i][1:4])), t, n)
+            self.rho.update(float(physics[k].rho(*X[i][1:4])), t, n)
+            self.g.update(np.array(physics[k].g(*X[i][1:4])).flatten(), t, n)
+            self.wind.update(np.array(physics[k].wind(*X[i][1:4])).flatten(), t, n)
+            self.F_max.update(float(physics[k].F_max(*X[i][1:4])), t, n)
+            self.q.update(float(physics[k].q(X[i])), t, n, max_q)
+
+            # kN+k nodes
+            self.mass.update(X[i][0], t, n)
+            if stage_interface:
+                self.stage_num.update(k, t, n)
+                self.mass.update(sols[k].X[0][0], t, n)
+            self.stage_num.update(k+1, t, n)
+
+            # kN nodes
+            if not last_node: # controls
+                self.f.update(U[i][0], t, n, f_min)
+                self.psi.update(U[i][1], t, n)
+                self.theta.update(U[i][2], t, n)
+                self.f_eff.update(float(physics[k].f_eff(U[i][0])), t, n, f_min)
+                self.ebx.update(np.array(physics[k].ebx(*U[i][1:])).flatten(), t, n)
+                self.eby.update(np.array(physics[k].eby(*U[i][1:])).flatten(), t, n)
+                self.ebz.update(np.array(physics[k].ebz(*U[i][1:])).flatten(), t, n)
+                self.alpha.update(float(np.arccos(min(1, physics[k].cos_alpha(X[i], U[i])))), t, n, max_alpha)
+            
+            # kN-1
+            if not first_node and not last_node: # control rates
+                dt = sol.T/N[k]
+                dudt = (np.array(U[i]) - np.array(U[i-1]))/dt
+                self.tau.update(dudt[0], t, n, max_tau)
+                self.body_rate_y.update(dudt[1]*np.cos((U[i][2] + U[i-1][2])/2), t, n, max_body_rate_y)
+                self.body_rate_z.update(dudt[2], t, n, max_body_rate_z)
 
 class Solver(AutoRepr):
     def __init__(self, 
@@ -315,6 +363,14 @@ class Solver(AutoRepr):
 
         start_time = time.time()
 
+        # some helpful variables
+        N  = self.context.N
+        cum_N = np.concatenate(([0], np.cumsum(N))) # stage boundaries by index
+        sum_N = np.sum(N) # total number of nodes kN
+        nstages = self.context.nstages
+        stages = self.context.stages
+        cs_list = self.constraints
+
         ### symbolic state and control vectors ###
         x = ca.SX.sym('[m, px, py, pz, vx, vy, vz]', 7, 1)
         u = ca.SX.sym('[f, psi, theta]', 3, 1)
@@ -322,48 +378,26 @@ class Solver(AutoRepr):
         nx = x.size1() # Number of states (10)
         nu = u.size1() # number of control vars (3)
 
-        V = ca.MX.sym('V', sum(self.context.N)*(nx + nu) + self.context.nstages + nx)
-        T = V[0:self.context.nstages]
+        V = ca.MX.sym('V', nstages + sum_N*(nx + nu) + nx)
+        T = V[0:nstages]
         T_sum = ca.sum1(T)
-        X = []
-        U = []
-        G = []
+        X = [V[nstages + i*(nx + nu): nstages + (i+1)*(nx + nu) - nu] for i in range(sum_N+1)] # select N+1 Xs
+        U = [V[nstages + i*(nx + nu) + nx: nstages + (i+1)*(nx + nu)] for i in range(sum_N)] # select N Us
+        G = [] # leave constraints to be filled out later
         
-        # all blocks start after nstages number of T's
-        # each block has N nx and nu with an additional sometimes overlapping nx
-        block_bounds = np.concatenate(([0], (nx+nu)*np.cumsum(self.context.N))) + self.context.nstages
-        for k in range(self.context.nstages):
-            N = self.context.N[k]
-            Vk = V[block_bounds[k] : block_bounds[k+1] + nx]
-            Uk = [Vk[(nx+nu)*i + nx : (nx+nu)*(i+1)] for i in range(N)]
-            Xk = [Vk[(nx+nu)*i: (nx+nu)*(i+1) - nu] for i in range(N + 1)]
-            U.append(Uk)
-            X.append(Xk)
-
-        for k, stage in enumerate(self.context.stages):
-            ###################
-            ### PHYSICS/ODE ###
-            ###################
-
-            # Constraints 
-            f_min_constr = self.constraints[k].f_min
-            q_constr = self.constraints[k].max_q
-            alpha_constr = self.constraints[k].max_alpha
-            body_rate_y_constr = self.constraints[k].max_body_rate_y
-            body_rate_z_constr = self.constraints[k].max_body_rate_z
-            tau_constr = self.constraints[k].max_tau
-
-            # Apply f_min constraint
+        # setup physics and itegrators for each stage
+        physics: List[StagePhysics] = []
+        integrators = []
+        for k in range(nstages):
+            f_min_constr = cs_list[k].f_min
             if f_min_constr.enabled and f_min_constr.value is not None:
                 f_min = f_min_constr.value
             else:
                 f_min = 0
-
-            stage_physics = StagePhysics(self.context, stage, f_min)
+            stage_physics = StagePhysics(self.context, stages[k], f_min)
+            physics.append(stage_physics)
             ode = stage_physics.ode(x, u)
-
             F_ode = ca.Function('F_ode', [x, u], [ode])
-            # All integrators need x, u, dt (symbolics) and should return x_next
             dt = ca.SX.sym("dt")
             if self.context.config.integration_method == 'RK4': # Implement more int methods later RK4
                 k1 = F_ode(x, u)
@@ -382,56 +416,57 @@ class Solver(AutoRepr):
                 F_int = ca.Function('F_int', [x_mx, u_mx, dt_mx], [I(x0=x_mx, u=u_mx, p=dt_mx)['xf']])
             else:
                 raise NotImplementedError(f'{self.context.config.integration_method} is not an implmented integrator.')
-            
-            ##############################
-            ### CONSTRAINT APPLICATION ###
-            ##############################
+            integrators.append(F_int)
 
-            N = self.context.N[k]
-            for i in range(N): # iterate through N stage nodes
-                # gap closing
-                if i+1 == N and k+1 < self.context.nstages: # if last node of a booster stage
-                    # stage i+1 mass plus stage i empty mass must equal integration of stage i mass flow
-                    m_e = self.context.stages[k].m_f - self.context.stages[k+1].m_0 # stage empty mass
-                    G.append(X[k][i+1][0] + m_e - F_int(X[k][i], U[k][i], T[k]/N)[0])
-                    G.append(X[k][i+1][1:] - F_int(X[k][i], U[k][i], T[k]/N)[1:])
+        for i in range(0, sum_N): # loop through 1st to kNth node, exluding kN+1th node
+            k = np.searchsorted(cum_N[:-1], i, side='right') - 1 # 'current' stage index, this breaks down at stage interfaces
+            stage_interface = i in cum_N[1:-1] # True if i is a stage interface node
+            first_loop_node = i+1 == 1 # True if first node of loop 
+            last_loop_node = i+1 == sum_N # True if last node of loop
 
-                else: # all other nodes
-                    G.append(X[k][i+1] - F_int(X[k][i], U[k][i], T[k]/N))
+            # gap closing
+            if i + 1 in cum_N[1:-1]: # if penultimate node in a stage
+                m_e = stages[k].m_f - stages[k+1].m_0 # stage empty mass
+                G.append(X[i+1][0] + m_e - integrators[k](X[i], U[i], T[k]/N[k])[0])
+                G.append(X[i+1][1:] - integrators[k](X[i], U[i], T[k]/N[k])[1:])
+            else:
+                G.append(X[i+1] - integrators[k](X[i], U[i], T[k]/N[k]))
 
-                if i == 0 and k == 0: # if first node and first stage
-                    # initial constraint placed here for sparcity
-                    ge_0 = self.x0.get_ge(X[0][0], U[0][0], T_sum, self.context)
-                    G += ge_0['g']
-                else: # all other nodes
-                    # add path constraints
-                    # do not let path dip below planet radius
-                    G.append(ca.sumsqr(ca.vertcat(X[k][i][1:4])) - self.context.body.r_0**2)
+            # radial constraint on interior nodes
+            if first_loop_node: # first node gets boundary condition
+                ge_0 = self.x0.get_ge(X[i], U[i], T_sum, self.context)
+                G += ge_0['g']
+            else: # interior points
+                G.append(ca.sumsqr(ca.vertcat(X[i][1:4])) - self.context.body.r_0**2)
 
-                    if f_min_constr.enabled and f_min_constr.value is not None:
-                        G.append((U[k][i][0] - f_min_constr.value + self.context.delta)*(U[k][i][0] - f_min_constr.value))
-                    # constraints currently do not consider stage interface!
-                    if q_constr.enabled and q_constr.value is not None: # max q
-                        G.append(stage_physics.q(X[k][i]))
-                    if alpha_constr.enabled and alpha_constr.value is not None: # max AoA
-                        G.append(stage_physics.cos_alpha(X[k][i], U[k][i]))
-                
-                # rate constraints (temporary)
-                if i+1 < N: # if not last node
-                    dt = T[k]/N
-                    if tau_constr.enabled and tau_constr.value is not None:
-                        G.append((U[k][i+1][0]-U[k][i][0])/dt)
-                    if body_rate_y_constr.enabled and body_rate_y_constr.value is not None:
-                        G.append((U[k][i+1][1]-U[k][i][1])/dt*ca.cos(U[k][i][2]))
-                    if body_rate_z_constr.enabled and body_rate_z_constr.value is not None:
-                        G.append((U[k][i+1][2]-U[k][i][2])/dt)
+                # choose current constraints and deal with stage interfaces
+                if stage_interface:
+                    max_cs = ConstraintSet.choose_max(cs_list[k-1], cs_list[k])
+                else:
+                    max_cs = cs_list[k]
 
-        # final constraint placed here for sparcity
-        ge_f = self.xf.get_ge(X[-1][-1], U[-1][-1], T_sum, self.context)
+                # rate and q constraints
+                dt = T[k]/N[k]
+                if max_cs.max_tau.enabled and max_cs.max_tau.value is not None:
+                    G.append((U[i][0]-U[i-1][0])/dt)
+                if max_cs.max_body_rate_y.enabled and max_cs.max_body_rate_y.value is not None:
+                    G.append((U[i][1]-U[i-1][1])/dt*ca.cos((U[i][2] + U[i-1][2])/2))
+                if max_cs.max_body_rate_z.enabled and max_cs.max_body_rate_z.value is not None:
+                    G.append((U[i][2]-U[i-1][2])/dt)
+                if max_cs.max_q.enabled and max_cs.max_q.value is not None: # max q
+                    G.append(physics[k].q(X[i]))
+
+            if not first_loop_node and not last_loop_node: # control node constraints
+                # f_min and alpha constraints
+                if cs_list[k].f_min.enabled and cs_list[k].f_min.value is not None:
+                    G.append((U[i][0] - cs_list[k].f_min.value + self.context.delta)*(U[i][0] - cs_list[k].f_min.value))
+                if cs_list[k].max_alpha.enabled and cs_list[k].max_alpha.value is not None:
+                    G.append(physics[k].cos_alpha(X[i], U[i]))
+
+        ge_f = self.xf.get_ge(X[-1], U[-1], T_sum, self.context)
         G += ge_f['g']
 
-        # Optimization function
-        opt_func = (self.context.stages[-1].m_0 - X[-1][-1][0])/(self.context.stages[-1].m_0 - self.context.stages[-1].m_f)
+        opt_func = (stages[-1].m_0 - X[-1][0])/(stages[-1].m_0 - stages[-1].m_f)
 
         # Create solver
         nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
@@ -443,7 +478,7 @@ class Solver(AutoRepr):
             }
         nlpsolver = ca.nlpsol('nlpsolver', 'ipopt', nlp, ipopt_opts)
         self.nlpsolver = nlpsolver
-        self.nlp_creation_time = time.time() - start_time        
+        self.nlp_creation_time = time.time() - start_time     
 
     def solve_nlp(self) -> None:
         start_time = time.time()
@@ -456,99 +491,108 @@ class Solver(AutoRepr):
         nu = 3
         x0, lbx, ubx, lbg, ubg = [], [], [], [], []
 
+        # some helpful variables
+        N  = self.context.N
+        cum_N = np.concatenate(([0], np.cumsum(N))) # stage boundaries by index
+        sum_N = np.sum(N) # total number of nodes kN
+        nstages = self.context.nstages
+        stages = self.context.stages
+        cs_list = self.constraints
+
         # create x0
         x0 += [sol.T for sol in self.stage_sols[-1]]
-        for k in range(self.context.nstages):
+        for k in range(nstages):
             for i in range(self.context.N[k]):
                 x0 += self.stage_sols[-1][k].X[i] + self.stage_sols[-1][k].U[i]
         x0 += self.stage_sols[-1][-1].X[-1]
 
-        # create lbg ubg
-        for k in range(self.context.nstages):
-            f_min_constr = self.constraints[k].f_min
-            q_constr = self.constraints[k].max_q
-            alpha_constr = self.constraints[k].max_alpha
-            body_rate_y_constr = self.constraints[k].max_body_rate_y
-            body_rate_z_constr = self.constraints[k].max_body_rate_z
-            tau_constr = self.constraints[k].max_tau
-            for i in range(self.context.N[k]):
-                # gap closing:
-                lbg += nx*[0]
-                ubg += nx*[0]
-
-                if i == 0 and k == 0:
-                    # initial constraints
-                    gb_0 = self.x0.get_gb(self.context)
-                    lbg += gb_0['lbg']
-                    ubg += gb_0['ubg']
-                else:
-                    # radius constraint
-                    lbg.append(0)
-                    ubg.append(ca.inf)
-                    if f_min_constr.enabled and f_min_constr.value is not None:
-                        lbg.append(0)
-                        ubg.append(1)
-                    if q_constr.enabled and q_constr.value is not None: # max q
-                        lbg.append(0)
-                        ubg.append(q_constr.value)
-                    if alpha_constr.enabled and alpha_constr.value is not None: # max AoA
-                        lbg.append(np.cos(alpha_constr.value))
-                        ubg.append(1)
-                if i+1 < self.context.N[k]: # if not last node
-                    if tau_constr.enabled and tau_constr.value is not None:
-                        lbg.append(-tau_constr.value)
-                        ubg.append(tau_constr.value)
-                    if body_rate_y_constr.enabled and body_rate_y_constr.value is not None:
-                        lbg.append(-body_rate_y_constr.value)
-                        ubg.append(body_rate_y_constr.value)
-                    if body_rate_z_constr.enabled and body_rate_z_constr.value is not None:
-                        lbg.append(-body_rate_z_constr.value)
-                        ubg.append(body_rate_z_constr.value)
-
-        # final constraint
-        gb_f = self.xf.get_gb(self.context)
-        lbg += gb_f['lbg']
-        ubg += gb_f['ubg']
-
-        # create lbx ubx
+        # create start of lbx ubx and free bound
         free_bound = FreeBound()
         xb_free = free_bound.get_xb(self.context)
         ub_free = free_bound.get_ub(self.context)
         lbx += self.context.T_min
         ubx += self.context.T_max
-        for k, stage in enumerate(self.context.stages):
-            N = self.context.N[k]
-            m_0 = stage.m_0
-            m_f = stage.m_f
-            f_min_constr = self.constraints[k].f_min
-            if f_min_constr.enabled and f_min_constr.value is not None:
-                lbf = max(f_min_constr.value - self.context.delta, 0)
+
+        for i in range(0, sum_N): # loop through 1st to kNth node, exluding kN+1th node
+            k = np.searchsorted(cum_N[:-1], i, side='right') - 1 # 'current' stage index, this breaks down at stage interfaces
+            stage_interface = i in cum_N[1:-1] # True if i is a stage interface node
+            first_loop_node = i+1 == 1 # True if first node of loop 
+            last_loop_node = i+1 == sum_N # True if last node of loop
+
+            # mass for current stage
+            m_0 = stages[k].m_0
+            m_f = stages[k].m_f
+
+            # f_min for current stage
+            if cs_list[k].f_min.enabled and cs_list[k].f_min.value is not None:
+                lbf = max(cs_list[k].f_min.value - self.context.delta, 0)
             else:
                 lbf = 0
-            
-            # bounds on first node
-            if k == 0:
+
+            # gap closing
+            lbg += nx*[0]
+            ubg += nx*[0]
+
+            if first_loop_node:
+                gb_0 = self.x0.get_gb(self.context)
+                lbg += gb_0['lbg']
+                ubg += gb_0['ubg']
+
                 xb_0 = self.x0.get_xb(self.context)
                 ub_0 = self.x0.get_ub(self.context)
                 lbx += [m_0] + xb_0['lbx'] + [lbf] + ub_0['lbu']
                 ubx += [m_0] + xb_0['ubx'] + [1]   + ub_0['ubu']
-            else: # stage interface nodes are here vvv
-                lbx += [m_0] + xb_free['lbx'] + [lbf] + ub_free['lbu']
-                ubx += [m_0] + xb_free['ubx'] + [1]   + ub_free['ubu']
 
-            # bounds on next N-1 nodes (N total at this point)
-            if k + 1 < self.context.nstages: # if not last stage
-                lbx += (N-1)*([m_f] + xb_free['lbx'] + [lbf] + ub_free['lbu'])
-                ubx += (N-1)*([m_0] + xb_free['ubx'] + [1]   + ub_free['ubu'])
-            else: # Last stage gets extra xb and special ub 
-                lbx += (N-2)*([m_f] + xb_free['lbx'] + [lbf] + ub_free['lbu'])
-                ubx += (N-2)*([m_0] + xb_free['ubx'] + [1]   + ub_free['ubu'])
+            else: # interior points
+                # radius constraint
+                lbg.append(0)
+                ubg.append(ca.inf)
 
-                # final constraint
-                xb_f = self.xf.get_xb(self.context)
-                ub_f = self.xf.get_ub(self.context)
-                lbx += [m_f] + xb_free['lbx'] + [lbf] + ub_f['lbu'] + [m_f] + xb_f['lbx']
-                ubx += [m_0] + xb_free['ubx'] + [1]   + ub_f['ubu'] + [m_0] + xb_f['ubx']
+                if stage_interface: # stage interface nodes
+                    max_cs = ConstraintSet.choose_max(cs_list[k-1], cs_list[k])
+                    lbx += [m_0] + xb_free['lbx'] + [lbf] + ub_free['lbu']
+                    ubx += [m_0] + xb_free['ubx'] + [1]   + ub_free['ubu']
+                else: # non-stage interface interior nodes ('regular nodes')
+                    max_cs = cs_list[k]
+                    if last_loop_node:
+                        ub_f = self.xf.get_ub(self.context)
+                        lbx += [m_f] + xb_free['lbx'] + [lbf] + ub_f['lbu']
+                        ubx += [m_0] + xb_free['ubx'] + [1]   + ub_f['ubu']
+                    else:
+                        lbx += [m_f] + xb_free['lbx'] + [lbf] + ub_free['lbu']
+                        ubx += [m_0] + xb_free['ubx'] + [1]   + ub_free['ubu']
+
+                # rate and q constraints here
+                if max_cs.max_tau.enabled and max_cs.max_tau.value is not None:
+                    lbg.append(-max_cs.max_tau.value)
+                    ubg.append(max_cs.max_tau.value)
+                if max_cs.max_body_rate_y.enabled and max_cs.max_body_rate_y.value is not None:
+                    lbg.append(-max_cs.max_body_rate_y.value)
+                    ubg.append(max_cs.max_body_rate_y.value)
+                if max_cs.max_body_rate_z.enabled and max_cs.max_body_rate_z.value is not None:
+                    lbg.append(-max_cs.max_body_rate_z.value)
+                    ubg.append(max_cs.max_body_rate_z.value)
+                if max_cs.max_q.enabled and max_cs.max_q.value is not None: # max q
+                    lbg.append(0)
+                    ubg.append(max_cs.max_q.value)
+                
+            if not first_loop_node and not last_loop_node:
+                # f_min and alpha constraints here
+                if cs_list[k].f_min.enabled and cs_list[k].f_min.value is not None:
+                    lbg.append(0)
+                    ubg.append(1)
+                if cs_list[k].max_alpha.enabled and cs_list[k].max_alpha.value is not None: # max AoA
+                    lbg.append(np.cos(cs_list[k].max_alpha.value))
+                    ubg.append(1)
+        
+        # final constraint
+        gb_f = self.xf.get_gb(self.context)
+        lbg += gb_f['lbg']
+        ubg += gb_f['ubg']
+
+        xb_f = self.xf.get_xb(self.context)
+        lbx += [m_f] + xb_f['lbx']
+        ubx += [m_0] + xb_f['ubx']
 
         # SOLVE #
         result = self.nlpsolver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
