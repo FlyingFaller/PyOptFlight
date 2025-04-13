@@ -509,7 +509,12 @@ def plot_solutions(solver: Solver,
 
     return fig
 
-def plot_flight_data(solver: Solver, plot_on_nodes=True, use_radians=True, index=-1) -> plt.Figure:
+def plot_flight_data(solver: Solver, 
+                     plot_on_nodes: bool = True, 
+                     use_radians: bool = True,
+                     include: list[str] | str = None,
+                     exclude: list[str] | str = None,
+                     index=-1) -> plt.Figure:
     def split_segments(x, y):
         segments = []
         current_x, current_y = [], []
@@ -528,195 +533,222 @@ def plot_flight_data(solver: Solver, plot_on_nodes=True, use_radians=True, index
             segments.append((current_x, current_y))
         return segments
 
+    def choose_xdata(data: FlightSolution.TimeSeriesData) -> np.ndarray:
+        return data.nodes if plot_on_nodes else data.times
+
+    def choose_raddeg(data: np.ndarray) -> np.ndarray:
+        return data if use_radians else np.rad2deg(data)
+
+    def plot_constraints(ax, 
+                         data: FlightSolution.TimeSeriesData, 
+                         symmetric: bool, 
+                         angular: bool,
+                         color: str = 'red'):
+        x = choose_xdata(data)
+        constr = split_segments(x, data.constraint)
+        for i, (x, y) in enumerate(constr):
+            ydat = np.array(choose_raddeg(y)) if angular else np.array(y)
+            ax.plot(x, ydat, color=color, linestyle='-.')
+            ax.plot(x, -ydat, color=color, linestyle='-.') if symmetric else None
+
     data = solver.flight_sols[index]
     stage_bound = np.cumsum(solver.context.N)[:-1] if plot_on_nodes else np.cumsum([sol.T for sol in solver.stage_sols[index]])[:-1]
     x_label = 'Nodes' if plot_on_nodes else 'Time [s]'
+    angle_label = 'rad' if use_radians else 'deg'
 
-    fig, axes = plt.subplots(nrows=6, ncols=2, figsize=(20, 12))
-    axes = axes.flatten()
+    #################################
+    ### Induvidual plotting funcs ###
+    #################################
+
+    # 1: mass
+    def plot_mass(ax):
+        x = choose_xdata(data.mass)
+        ax.plot(x, data.mass.data, label='Mass', color='blue')
+        ax.set_title('Mass')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Mass [tons]')
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 2: f, f_eff, f_min
+    def plot_f(ax):
+        x = choose_xdata(data.f)
+        plot_constraints(ax, data.f, False, False)
+        ax.plot(x, data.f.data, label='$f$', color='blue')
+        ax.plot(x, data.f_eff.data, label='$f_{eff}$', linestyle=':', color='green')
+        ax.set_title('Throttle')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Throttle [%]')
+        ax.legend()
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 3: F_max
+    def plot_F_max(ax):
+        x = choose_xdata(data.F_max)
+        ax.plot(x, data.F_max.data, label='$F_{max}$', color='blue')
+        ax.set_title('Max Thrust')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Max Thrust [MN]')
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 4: Isp
+    def plot_Isp(ax):
+        x = choose_xdata(data.Isp)
+        ax.plot(x, data.Isp.data, label='$Isp$', color='blue')
+        ax.set_title('Specific Impulse')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Specific Impulse [s]')
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 5: rho
+    def plot_rho(ax):
+        x = choose_xdata(data.rho)
+        ax.plot(x, data.rho.data, label='$\\rho$', color='blue')
+        ax.set_title('Density')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Density [kg/m$^3$]')
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 6: q, q_max
+    def plot_q(ax):
+        x = choose_xdata(data.q)
+        plot_constraints(ax, data.q, False, False)
+        ax.plot(x, data.q.data, label='$q$', color='blue')
+        ax.set_title('Dynamic Pressure')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Dynamic Pressure [MPa]')
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 7: alpha, alpha_max
+    def plot_alpha(ax):
+        x = choose_xdata(data.alpha)
+        plot_constraints(ax, data.alpha, True, True)
+        ax.plot(x, choose_raddeg(data.alpha.data), label='$\\alpha$', color='blue')
+        ax.set_title('Angle of Attack')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Angle of Attack ['+angle_label+']')
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 8: tau, tau_max
+    def plot_tau(ax):
+        x = choose_xdata(data.tau)
+        plot_constraints(ax, data.tau, True, False)
+        ax.plot(x, data.tau.data, label='$\\tau$', color='blue')
+        ax.set_title('Throttle Rate')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Throttle Rate [%/s]')
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 9: body_rate_y, body_rate_z, max_body_rate_y, max_body_rate_z
+    def plot_body_rates(ax):
+        xy = choose_xdata(data.body_rate_y)
+        xz = choose_xdata(data.body_rate_z)
+        plot_constraints(ax, data.body_rate_y, True, True, color='red')
+        plot_constraints(ax, data.body_rate_z, True, True, color='orange')
+
+        ax.plot(xy, data.body_rate_y.data, label='Body Rate $y$ ($q$)', color='blue')
+        ax.plot(xz, data.body_rate_z.data, label='Body Rate $z$ ($r$)', color='green')
+        ax.set_title('Body Angular Rates')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Body Angular ['+angle_label+'/s]')
+        ax.legend()
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 10: psi, theta
+    def plot_psi_theta(ax):
+        xpsi = choose_xdata(data.psi)
+        xtheta = choose_xdata(data.theta)
+        ax.plot(xpsi, choose_raddeg(data.psi.data), label='$\\psi$', color='blue')
+        ax.plot(xtheta, choose_raddeg(data.theta.data), label='$\\theta$', color='green')
+        ax.set_title('Attitude')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Attitude ['+angle_label+']')
+        ax.legend()
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 11: h
+    def plot_h(ax):
+        x = choose_xdata(data.h)
+        ax.plot(x, data.h.data, label='$h$', color='blue')
+        ax.set_title('Altitude')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Altitude [km]')
+        ax.grid(True)
+        ax.margins(x=0)
+
+    # 12: v_mag
+    def plot_vmag(ax):
+        x = choose_xdata(data.vel)
+        v_mag = np.sum(data.vel.data**2, axis=1)**0.5
+        ax.plot(x, v_mag, label='$\\vert\\vert \\vec{v} \\vert\\vert$', color='blue')
+        ax.set_title('Velocity Magnitude')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel('Velocity Magnitude [km/s]')
+        ax.grid(True)
+        ax.margins(x=0)
+
+    plot_funcs = {
+        'mass'      : plot_mass,
+        'f'         : plot_f,
+        'F_max'     : plot_F_max,
+        'Isp'       : plot_Isp,
+        'rho'       : plot_rho,
+        'q'         : plot_q,
+        'alpha'     : plot_alpha,
+        'tau'       : plot_tau,
+        'body_rates': plot_body_rates,
+        'psi_theta' : plot_psi_theta,
+        'h'         : plot_h,
+        'vmag'      : plot_vmag,
+    }
+
+    selected_plots = {}
+    if include is not None:
+        include = [include] if isinstance(include, str) else include
+        for key in include:
+            if key in plot_funcs:
+                selected_plots[key] = plot_funcs[key]
+    else:
+        # Start with all plots.
+        selected_plots = plot_funcs.copy()
+        exclude = [exclude] if isinstance(exclude, str) else exclude
+        if exclude is not None:
+            for key in exclude:
+                selected_plots.pop(key, None)
+
+    # Determine the number of plots to show.
+    n_plots = len(selected_plots)
+    if n_plots == 0:
+        raise ValueError("No plots selected after applying include/exclude filters.")
+
+    ncols = 2 if n_plots > 1 else 1
+    nrows = int(np.ceil(n_plots / ncols))
+    # fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8*ncols, 2*nrows))
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(16, 6*ncols))
+    axes = [axes] if n_plots == 1 else axes.flatten()
 
     # plot stage boundaries on all subplots
     for i, ax in enumerate(axes):
         for bound in stage_bound:
             ax.axvline(bound, linestyle='--', color='gray')
+    
+    # Loop over the selected plots and apply their plotting functions.
+    for ax, (name, plot_func) in zip(axes, selected_plots.items()):
+        plot_func(ax)
 
-    # 1: mass
-    x0 = data.mass.nodes if plot_on_nodes else data.mass.times
-    axes[0].plot(x0, data.mass.data, label='Mass', color='blue')
-    axes[0].set_title('Mass')
-    axes[0].set_xlabel(x_label)
-    axes[0].set_ylabel('Mass [tons]')
-    # axes[0].legend()
-    axes[0].grid(True)
+    # Hide any extra subplots not used.
+    for ax in axes[len(selected_plots):]:
+        ax.set_visible(False)
 
-    # 2: f, f_eff, f_min
-    x1 = data.f.nodes if plot_on_nodes else data.f.times
-    f_min = split_segments(x=x1, y=data.f.constraint)
-    for i, (x, y) in enumerate(f_min):
-        axes[1].plot(x, y, color='red', linestyle='-.')
-    axes[1].plot(x1, data.f.data, label='$f$', color='blue')
-    axes[1].plot(x1, data.f_eff.data, label='$f_{eff}$', linestyle=':', color='green')
-    axes[1].set_title('Throttle')
-    axes[1].set_xlabel(x_label)
-    axes[1].set_ylabel('Throttle [%]')
-    axes[1].legend()
-    axes[1].grid(True)
-
-    # 3: F_max
-    x2 = data.F_max.nodes if plot_on_nodes else data.F_max.times
-    axes[2].plot(x2, data.F_max.data, label='$F_{max}$', color='blue')
-    axes[2].set_title('Max Thrust')
-    axes[2].set_xlabel(x_label)
-    axes[2].set_ylabel('Max Thrust [MN]')
-    # axes[2].legend()
-    axes[2].grid(True)
-
-    # 4: Isp
-    x3 = data.Isp.nodes if plot_on_nodes else data.Isp.times
-    axes[3].plot(x3, data.Isp.data, label='$Isp$', color='blue')
-    axes[3].set_title('Specific Impulse')
-    axes[3].set_xlabel(x_label)
-    axes[3].set_ylabel('Specific Impulse [s]')
-    # axes[3].legend()
-    axes[3].grid(True)
-
-    # 5: rho
-    x4 = data.rho.nodes if plot_on_nodes else data.rho.times
-    axes[4].plot(x4, data.rho.data, label='$\\rho$', color='blue')
-    axes[4].set_title('Density')
-    axes[4].set_xlabel(x_label)
-    axes[4].set_ylabel('Density [kg/m$^3$]')
-    # axes[4].legend()
-    axes[4].grid(True)
-
-    # 6: q, q_max
-    x5 = data.f.nodes if plot_on_nodes else data.f.times
-    q_max = split_segments(x=x5, y=data.q.constraint)
-    for i, (x, y) in enumerate(q_max):
-        axes[5].plot(x, y, color='red', linestyle='-.')
-    axes[5].plot(x5, data.f.data, label='$q$', color='blue')
-    axes[5].set_title('Dynamic Pressure')
-    axes[5].set_xlabel(x_label)
-    axes[5].set_ylabel('Dynamic Pressure [MPa]')
-    # axes[5].legend()
-    axes[5].grid(True)
-
-    # 7: alpha, alpha_max
-    x6 = data.alpha.nodes if plot_on_nodes else data.alpha.times
-    alpha_max = split_segments(x=x6, y=data.alpha.constraint)
-    for i, (x, y) in enumerate(alpha_max):
-        if use_radians:
-            axes[6].plot(x, np.array(y), color='red', linestyle='-.')
-            axes[6].plot(x, -np.array(y), color='red', linestyle='-.')
-        else:
-            axes[6].plot(x, np.rad2deg(y), color='red', linestyle='-.')
-            axes[6].plot(x, -np.rad2deg(y), color='red', linestyle='-.')
-    if use_radians:
-        axes[6].plot(x6, data.alpha.data, label='$\\alpha$', color='blue')
-    else:
-        axes[6].plot(x6, np.rad2deg(data.alpha.data), label='$\\alpha$', color='blue')
-    axes[6].set_title('Angle of Attack')
-    axes[6].set_xlabel(x_label)
-    if use_radians:
-        axes[6].set_ylabel('Angle of Attack [rad]')
-    else:
-        axes[6].set_ylabel('Angle of Attack [deg]')
-    # axes[6].legend()
-    axes[6].grid(True)
-
-    # 8: tau, tau_max
-    x7 = data.tau.nodes if plot_on_nodes else data.tau.times
-    tau_max = split_segments(x=x7, y=data.tau.constraint)
-    for i, (x, y) in enumerate(tau_max):
-        axes[7].plot(x, np.array(y), color='red', linestyle='-.')
-        axes[7].plot(x, -np.array(y), color='red', linestyle='-.')
-    axes[7].plot(x7, data.tau.data, label='$\\tau$', color='blue')
-    axes[7].set_title('Throttle Rate')
-    axes[7].set_xlabel(x_label)
-    axes[7].set_ylabel('Throttle Rate [%/s]')
-    # axes[7].legend()
-    axes[7].grid(True)
-
-    # 9: body_rate_y, body_rate_z, max_body_rate_y, max_body_rate_z
-    x8a = data.body_rate_y.nodes if plot_on_nodes else data.body_rate_y.times
-    x8b = data.body_rate_z.nodes if plot_on_nodes else data.body_rate_z.times
-    max_body_rate_y = split_segments(x=x8a, y=data.body_rate_y.constraint)
-    max_body_rate_z = split_segments(x=x8b, y=data.body_rate_z.constraint)
-    for i, (x, y) in enumerate(max_body_rate_y):
-        if use_radians:
-            axes[8].plot(x, np.array(y), color='red', linestyle='-.')
-            axes[8].plot(x, -np.array(y), color='red', linestyle='-.')
-        else:
-            axes[8].plot(x, np.rad2deg(y), color='red', linestyle='-.')
-            axes[8].plot(x, -np.rad2deg(y), color='red', linestyle='-.')
-
-    for i, (x, y) in enumerate(max_body_rate_z):
-        if use_radians:
-            axes[8].plot(x, np.array(y), color='orange', linestyle='-.')
-            axes[8].plot(x, -np.array(y), color='orange', linestyle='-.')
-        else:
-            axes[8].plot(x, np.rad2deg(y), color='orange', linestyle='-.')
-            axes[8].plot(x, -np.rad2deg(y), color='orange', linestyle='-.')
-
-    axes[8].plot(x8a, data.body_rate_y.data, label='Body Rate $y$ ($q$)', color='blue')
-    axes[8].plot(x8b, data.body_rate_z.data, label='Body Rate $z$ ($r$)', color='green')
-    axes[8].set_title('Body Angular Rates')
-    axes[8].set_xlabel(x_label)
-    if use_radians:
-        axes[8].set_ylabel('Body Angular [rad/s]')
-    else:
-        axes[8].set_ylabel('Body Angular [deg/s]')
-    axes[8].legend()
-    axes[8].grid(True)
-
-    # 10: psi, theta
-    x9a = data.psi.nodes if plot_on_nodes else data.psi.times
-    x9b = data.theta.nodes if plot_on_nodes else data.theta.times
-    if use_radians:
-        axes[9].plot(x9a, data.psi.data, label='$\\psi$', color='blue')
-        axes[9].plot(x9b, data.theta.data, label='$\\theta$', color='green')
-    else:
-        axes[9].plot(x9a, np.rad2deg(data.psi.data), label='$\\psi$', color='blue')
-        axes[9].plot(x9b, np.rad2deg(data.theta.data), label='$\\theta$', color='green')
-    axes[9].set_title('Attitude')
-    axes[9].set_xlabel(x_label)
-    if use_radians:
-        axes[9].set_ylabel('Attitude [rad]')
-    else:
-        axes[9].set_ylabel('Attitude [deg]')
-    axes[9].legend()
-    axes[9].grid(True)
-
-    # 11: h
-    x10 = data.h.nodes if plot_on_nodes else data.h.times
-    axes[10].plot(x10, data.h.data, label='$h$', color='blue')
-    axes[10].set_title('Altitude')
-    axes[10].set_xlabel(x_label)
-    axes[10].set_ylabel('Altitude [km]')
-    # axes[10].legend()
-    axes[10].grid(True)
-
-    # 12: v_mag
-    x11 = data.vel.nodes if plot_on_nodes else data.vel.times
-    v_mag = np.sum(data.vel.data**2, axis=1)**0.5
-    axes[11].plot(x11, v_mag, label='$\\vert\\vert \\vec{v} \\vert\\vert$', color='blue')
-    axes[11].set_title('Velocity Magnitude')
-    axes[11].set_xlabel(x_label)
-    axes[11].set_ylabel('Velocity Magnitude [km/s]')
-    # axes[11].legend()
-    axes[11].grid(True)
-    # possible plots:
-    # 1: mass
-    # 2: f, f_eff, f_min
-    # 3: F_max
-    # 4: Isp
-    # 5: rho
-    # 6: q, q_max
-    # 7: alpha, alpha_max
-    # 8: tau, tau_max
-    # 9: body rates, body rates max
-    # 10: psi, theta
-    # 11: h
-    # 12: v_mag
     fig.tight_layout()
     return fig
+
