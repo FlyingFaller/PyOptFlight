@@ -346,6 +346,7 @@ def add_background_stars(fig, skybox_rad=None, nstars_per_face=500,
     zs = []
 
     # Face: x = +star_box_distance (right face)
+    # TODO: make this some loops man come on
     xs.append(np.full(nstars_per_face, skybox_rad))
     ys.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
     zs.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
