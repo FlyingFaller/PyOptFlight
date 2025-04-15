@@ -51,9 +51,9 @@ class FlightSolution(AutoRepr):
     """Data computed after solving. Flight stats."""
     @dataclass(repr=False)
     class TimeSeriesData(AutoRepr):
-        data: np.ndarray = np.empty(0)
-        times: np.ndarray = np.empty(0)
-        nodes: np.ndarray = np.empty(0, dtype=int)
+        data: np.ndarray = field(default_factory=lambda: np.empty(0))
+        times: np.ndarray = field(default_factory=lambda: np.empty(0))
+        nodes: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
         constraint: list = field(default_factory=list)
         
         def update(self, data: float|np.ndarray|list, time: float, node: int, constraint: float|None = None) -> None:

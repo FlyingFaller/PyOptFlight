@@ -223,8 +223,6 @@ class LatLngBound(BoundaryObj):
             lbu = [psi, theta]
             return {'ubu': ubu, 'lbu': lbu}
             
-
-    
 class StateBound(BoundaryObj):
     def __init__(self, **kwargs) -> None:
         self.state = kwargs.get("state")
