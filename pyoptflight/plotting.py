@@ -345,36 +345,13 @@ def add_background_stars(fig, skybox_rad=None, nstars_per_face=500,
     ys = []
     zs = []
 
-    # Face: x = +star_box_distance (right face)
-    # TODO: make this some loops man come on
-    xs.append(np.full(nstars_per_face, skybox_rad))
-    ys.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-    zs.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-
-    # Face: x = -star_box_distance (left face)
-    xs.append(np.full(nstars_per_face, -skybox_rad))
-    ys.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-    zs.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-
-    # Face: y = +star_box_distance (front face)
-    xs.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-    ys.append(np.full(nstars_per_face, skybox_rad))
-    zs.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-
-    # Face: y = -star_box_distance (back face)
-    xs.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-    ys.append(np.full(nstars_per_face, -skybox_rad))
-    zs.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-
-    # Face: z = +star_box_distance (top face)
-    xs.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-    ys.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-    zs.append(np.full(nstars_per_face, skybox_rad))
-
-    # Face: z = -star_box_distance (bottom face)
-    xs.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-    ys.append(np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face))
-    zs.append(np.full(nstars_per_face, -skybox_rad))
+    # Randomly generate star coordiantes on star box faces.
+    full = np.full(nstars_per_face, skybox_rad)
+    for i in range(6):
+        rand_star = lambda: np.random.uniform(-skybox_rad, skybox_rad, nstars_per_face)
+        xs.append((-1)**i*full if i//2 == 0 else rand_star())
+        ys.append((-1)**i*full if i//2 == 1 else rand_star())
+        zs.append((-1)**i*full if i//2 == 2 else rand_star())
 
     # Concatenate all points together
     xs = np.concatenate(xs)
@@ -540,17 +517,27 @@ def plot_flight_data(solver: Solver,
     def choose_raddeg(data: np.ndarray) -> np.ndarray:
         return data if use_radians else np.rad2deg(data)
 
-    def plot_constraints(ax, 
+    def plot_constraints(ax: plt.Axes, 
                          data: FlightSolution.TimeSeriesData, 
                          symmetric: bool, 
                          angular: bool,
-                         color: str = 'red'):
+                         color: str = 'red',
+                         shade_above: bool = True):
         x = choose_xdata(data)
         constr = split_segments(x, data.constraint)
-        for i, (x, y) in enumerate(constr):
-            ydat = np.array(choose_raddeg(y)) if angular else np.array(y)
-            ax.plot(x, ydat, color=color, linestyle='-.')
-            ax.plot(x, -ydat, color=color, linestyle='-.') if symmetric else None
+        for i, (seg_x, seg_y) in enumerate(constr):
+            ydat = np.array(choose_raddeg(seg_y)) if angular else np.array(seg_y)
+            ax.plot(seg_x,  ydat, color=color, linestyle='-.', zorder=0)
+            ax.plot(seg_x, -ydat, color=color, linestyle='-.', zorder=0) if symmetric else None
+        ybot, ytop = ax.get_ylim()[0], ax.get_ylim()[1]
+        for i, (seg_x, seg_y) in enumerate(constr):
+            if shade_above:
+                ax.fill_between(seg_x, ydat, ytop, color=color, alpha=0.2, zorder=0)
+                ax.fill_between(seg_x, ybot, -ydat, color=color, alpha=0.2, zorder=0) if symmetric else None
+            else:
+                ax.fill_between(seg_x, ybot, ydat, color=color, alpha=0.2, zorder=0)
+                ax.fill_between(seg_x, -ydat, ytop, color=color, alpha=0.2, zorder=0) if symmetric else None
+        ax.margins(y=0)
 
     data = solver.flight_sols[index]
     stage_bound = np.cumsum(solver.context.N)[:-1] if plot_on_nodes else np.cumsum([sol.T for sol in solver.stage_sols[index]])[:-1]
@@ -562,7 +549,7 @@ def plot_flight_data(solver: Solver,
     #################################
 
     # 1: mass
-    def plot_mass(ax):
+    def plot_mass(ax: plt.Axes):
         x = choose_xdata(data.mass)
         ax.plot(x, data.mass.data, label='Mass', color='blue')
         ax.set_title('Mass')
@@ -572,20 +559,21 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 2: f, f_eff, f_min
-    def plot_f(ax):
+    def plot_f(ax: plt.Axes):
         x = choose_xdata(data.f)
-        plot_constraints(ax, data.f, False, False)
         ax.plot(x, data.f.data, label='$f$', color='blue')
         ax.plot(x, data.f_eff.data, label='$f_{eff}$', linestyle=':', color='green')
+        plot_constraints(ax, data.f, False, False, shade_above=False)
         ax.set_title('Throttle')
         ax.set_xlabel(x_label)
         ax.set_ylabel('Throttle [%]')
         ax.legend()
         ax.grid(True)
         ax.margins(x=0)
+        
 
     # 3: F_max
-    def plot_F_max(ax):
+    def plot_F_max(ax: plt.Axes):
         x = choose_xdata(data.F_max)
         ax.plot(x, data.F_max.data, label='$F_{max}$', color='blue')
         ax.set_title('Max Thrust')
@@ -595,7 +583,7 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 4: Isp
-    def plot_Isp(ax):
+    def plot_Isp(ax: plt.Axes):
         x = choose_xdata(data.Isp)
         ax.plot(x, data.Isp.data, label='$Isp$', color='blue')
         ax.set_title('Specific Impulse')
@@ -605,7 +593,7 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 5: rho
-    def plot_rho(ax):
+    def plot_rho(ax: plt.Axes):
         x = choose_xdata(data.rho)
         ax.plot(x, data.rho.data, label='$\\rho$', color='blue')
         ax.set_title('Density')
@@ -615,10 +603,10 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 6: q, q_max
-    def plot_q(ax):
+    def plot_q(ax: plt.Axes):
         x = choose_xdata(data.q)
-        plot_constraints(ax, data.q, False, False)
         ax.plot(x, data.q.data, label='$q$', color='blue')
+        plot_constraints(ax, data.q, False, False)
         ax.set_title('Dynamic Pressure')
         ax.set_xlabel(x_label)
         ax.set_ylabel('Dynamic Pressure [MPa]')
@@ -626,10 +614,10 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 7: alpha, alpha_max
-    def plot_alpha(ax):
+    def plot_alpha(ax: plt.Axes):
         x = choose_xdata(data.alpha)
-        plot_constraints(ax, data.alpha, True, True)
         ax.plot(x, choose_raddeg(data.alpha.data), label='$\\alpha$', color='blue')
+        plot_constraints(ax, data.alpha, True, True)
         ax.set_title('Angle of Attack')
         ax.set_xlabel(x_label)
         ax.set_ylabel('Angle of Attack ['+angle_label+']')
@@ -637,10 +625,10 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 8: tau, tau_max
-    def plot_tau(ax):
+    def plot_tau(ax: plt.Axes):
         x = choose_xdata(data.tau)
-        plot_constraints(ax, data.tau, True, False)
         ax.plot(x, data.tau.data, label='$\\tau$', color='blue')
+        plot_constraints(ax, data.tau, True, False)
         ax.set_title('Throttle Rate')
         ax.set_xlabel(x_label)
         ax.set_ylabel('Throttle Rate [%/s]')
@@ -648,14 +636,13 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 9: body_rate_y, body_rate_z, max_body_rate_y, max_body_rate_z
-    def plot_body_rates(ax):
+    def plot_body_rates(ax: plt.Axes):
         xy = choose_xdata(data.body_rate_y)
         xz = choose_xdata(data.body_rate_z)
-        plot_constraints(ax, data.body_rate_y, True, True, color='red')
-        plot_constraints(ax, data.body_rate_z, True, True, color='orange')
-
         ax.plot(xy, data.body_rate_y.data, label='Body Rate $y$ ($q$)', color='blue')
         ax.plot(xz, data.body_rate_z.data, label='Body Rate $z$ ($r$)', color='green')
+        plot_constraints(ax, data.body_rate_y, True, True, color='red')
+        plot_constraints(ax, data.body_rate_z, True, True, color='orange')
         ax.set_title('Body Angular Rates')
         ax.set_xlabel(x_label)
         ax.set_ylabel('Body Angular ['+angle_label+'/s]')
@@ -664,7 +651,7 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 10: psi, theta
-    def plot_psi_theta(ax):
+    def plot_psi_theta(ax: plt.Axes):
         xpsi = choose_xdata(data.psi)
         xtheta = choose_xdata(data.theta)
         ax.plot(xpsi, choose_raddeg(data.psi.data), label='$\\psi$', color='blue')
@@ -677,7 +664,7 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 11: h
-    def plot_h(ax):
+    def plot_h(ax: plt.Axes):
         x = choose_xdata(data.h)
         ax.plot(x, data.h.data, label='$h$', color='blue')
         ax.set_title('Altitude')
@@ -687,7 +674,7 @@ def plot_flight_data(solver: Solver,
         ax.margins(x=0)
 
     # 12: v_mag
-    def plot_vmag(ax):
+    def plot_vmag(ax: plt.Axes):
         x = choose_xdata(data.vel)
         v_mag = np.sum(data.vel.data**2, axis=1)**0.5
         ax.plot(x, v_mag, label='$\\vert\\vert \\vec{v} \\vert\\vert$', color='blue')
@@ -731,10 +718,21 @@ def plot_flight_data(solver: Solver,
     if n_plots == 0:
         raise ValueError("No plots selected after applying include/exclude filters.")
 
-    ncols = 2 if n_plots > 1 else 1
-    nrows = int(np.ceil(n_plots / ncols))
-    # fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8*ncols, 2*nrows))
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(16, 6*ncols))
+    max_width, max_height = 16, 12 # max figure size
+    aspect_ratio = 4 # desired subplot aspect ratio
+    best_h = 0 # largest subplot height found
+    best_ncols, best_nrows = None, None
+    for ncols in range(1, n_plots + 1):
+        nrows = -(n_plots // -ncols) # ceiling division
+        h = min(max_width / (aspect_ratio * ncols), max_height / nrows) 
+        if h > best_h:
+            best_h = h
+            best_ncols, best_nrows = ncols, nrows
+
+    fig_width = best_ncols * aspect_ratio * best_h
+    fig_height = best_nrows * best_h
+    print(f"n_plots = {n_plots}: ncols = {best_ncols}, nrows = {best_nrows}, figsize = ({fig_width}, {fig_height})")
+    fig, axes = plt.subplots(nrows=best_nrows, ncols=best_ncols, figsize=(fig_width, fig_height))
     axes = [axes] if n_plots == 1 else axes.flatten()
 
     # plot stage boundaries on all subplots
