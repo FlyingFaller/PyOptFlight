@@ -5,6 +5,7 @@ import json
 import random
 import matplotlib.colors as mcolors
 from scipy.spatial.transform import Rotation as R
+import copy
 
 def start_streams(session_info, stream_dict=None):
     (conn, vessel, refframe) = session_info
@@ -50,15 +51,15 @@ def stop_streams(streams):
         stream.remove()
 
 class Recording:
-    def __init__(self, session_info, streams, variables=None, game_time = False, auto_stage=False, stages_to_go=0):
+    def __init__(self, session_info, stream_funcs, variables=None, game_time = False, auto_stage=False, stages_to_go=0):
         (conn, vessel, refframe) = session_info
         # Initialize recorded data and interval for automatic recording
         if variables is None:
-            self.data = {key: [] for key in streams.keys()}
+            self.data = {key: [] for key in stream_funcs.keys()}
         else:
             self.data = {key: [] for key in variables}
         
-        self.streams = streams
+        self.stream_funcs = copy.copy(stream_funcs)
         self._recording = False
         self._recording_thread = None
         self.auto_stage = auto_stage
@@ -70,14 +71,22 @@ class Recording:
         self.warp_rate = conn.add_stream(getattr, conn.space_center, 'warp_rate')
         self.game_time = game_time
 
+    def register_stream_func(self, key, stream_func):
+        """Adds a function to data streams available to be recorded."""
+        self.stream_funcs[key] = stream_func
+        self.data[key] = [] # automatically enables recording, may break this out to new function
+
     def record_point(self):
         """Records a single point to the data list."""
-        if self.streams['thrust']() == 0 and self.stages_to_go > 0 and self.auto_stage:
-            self.vessel.control.activate_next_stage()
-            self.stages_to_go -= 1
+        if self.auto_stage and self.stream_funcs.get('thrust') is None:
+            raise Exception('thrust stream function must be provided for auto-staging.')
+        if self.auto_stage:
+            if self.stream_funcs['thrust']() == 0 and self.stages_to_go > 0:
+                self.vessel.control.activate_next_stage()
+                self.stages_to_go -= 1
 
         for key in self.data.keys():
-            self.data[key].append(self.streams[key]())
+            self.data[key].append(self.stream_funcs[key]())
 
     def start_recording(self, dt):
         """Starts automated recording in a separate thread."""
@@ -122,183 +131,17 @@ class Recording:
         self.paused.remove()
 
         if format == "npz":
-            np.savez(filename + '.npz', **{key: np.array(self.data[key]) for key in self.streams.keys()})
+            np.savez(filename + '.npz', **{key: np.array(self.data[key]) for key in self.stream_funcs.keys()})
             print(f"Recording saved to {filename}.npz")
         elif format == "json":
             with open(filename + '.json', 'w') as json_file:
                 # Convert numpy arrays to lists for JSON serialization
-                json_data = {key: np.array(self.data[key]).tolist() for key in self.streams.keys()}
+                json_data = {key: np.array(self.data[key]).tolist() for key in self.stream_funcs.keys()}
                 # json.dump(json_data, json_file, indent=4) # Pretty printing if it needs to be uber human readable
                 json.dump(json_data, json_file)
             print(f"Recording saved to {filename}.json")
         else:
             raise ValueError("Unsupported format. Please choose 'npz' or 'json'.")
-
-class OldVectorDrawer:
-
-    def __init__(self, session_info, streams, scale=1, normalize=False, vector_computations=None):
-        """
-        :param session_info: Tuple containing session connection, vessel, and reference frame.
-        :param streams: Dictionary of data streams.
-        :param scale: Global scaling factor for vector lengths.
-        :param normalize: Whether to normalize all vectors globally.
-        :param vector_computations: Dictionary mapping vector names to computation functions and options.
-        """
-        (self.conn, self.vessel, self.refframe) = session_info
-        self.streams = streams
-        self.global_scale = scale
-        self.global_normalize = normalize
-        self.vector_computations = vector_computations or {}
-        self._updating = False
-        self._update_thread = None
-        self.xkcd_colors = list(mcolors.XKCD_COLORS.values())  # Store all XKCD colors as a list
-        self.vessel_refframe = self.vessel.reference_frame
-        self.text_refframe = self.conn.space_center.ReferenceFrame.create_hybrid(self.vessel_refframe, self.refframe, self.vessel_refframe, self.refframe)
-
-    def register_vector(self, name, compute_function, color=None, scale=None, normalize=None, label=None, label_offset=None):
-        """
-        Registers a new vector with its computation function and options.
-        :param name: Name of the vector.
-        :param compute_function: A function that computes the vector(s).
-        :param color: A single color tuple or a list of colors for each vector (if multiple vectors are returned).
-        :param scale: Scale factor for this vector (overrides global scale).
-        :param normalize: Whether to normalize this vector (overrides global normalization).
-        :param label: Label to display next to the vector.
-        :param label_offset: Distance to place the label from the CoM in the direction of the vector. Placed at end of vector if None.
-        """
-        self.vector_computations[name] = {
-            "function": compute_function,
-            "color": color or self._get_random_color(),
-            "scale": scale,
-            "normalize": normalize,
-            "label": label,
-            "label_offset": label_offset
-        }
-
-    def draw_vectors(self, selected_vectors=None):
-        """
-        Draws the specified vectors or all registered vectors if none are specified.
-        :param selected_vectors: List of vector names to draw.
-        """
-        # self.conn.drawing.clear()  # Clear previous vectors before updating
-
-        vectors_to_draw = selected_vectors or self.vector_computations.keys()
-        for name in vectors_to_draw:
-            if name in self.vector_computations:
-                vector_data = self.vector_computations[name]
-                vectors = vector_data["function"]()  # Compute vector(s)
-                color = vector_data.get("color", self._get_random_color())
-                scale = vector_data.get("scale", self.global_scale)
-                normalize = vector_data.get("normalize", self.global_normalize)
-                label = vector_data.get("label", None)
-                label_offset = vector_data.get("label_offset", None)
-                norm_vectors = self._normalize_vectors(vectors)
-
-                if normalize:
-                    draw_vectors = norm_vectors*scale
-                else:
-                    draw_vectors = vectors*scale
-
-                if "line_objs" in vector_data:
-                    if draw_vectors.ndim == 1:  # Single vector
-                        vector_data["line_objs"].end = tuple(draw_vectors)
-                    elif draw_vectors.ndim == 2:  # Multiple vectors
-                        for i, line in enumerate(vector_data["line_objs"]):
-                            line.end = tuple(draw_vectors[i])
-                else:
-                    if draw_vectors.ndim == 1:  # Single vector
-                        vector_data["line_objs"] = self._draw_single_vector(draw_vectors, color)
-                    elif draw_vectors.ndim == 2:  # Multiple vectors
-                        vector_data["line_objs"] = []
-                        for i, vector in enumerate(draw_vectors):
-                            vector_data["line_objs"].append(self._draw_single_vector(vector, color[i] if isinstance(color, list) else color))
-
-                if label is not None:
-                    if label_offset is not None:
-                        label_poses = label_offset*norm_vectors
-                    else:
-                        label_poses = draw_vectors
-
-                    if "text_objs" in vector_data:
-                        if label_poses.ndim == 1:  # Single vector
-                            vector_data["text_objs"].position = tuple(label_poses)
-                        elif label_poses.ndim == 2:  # Multiple vectors
-                            for i, text in enumerate(vector_data["text_objs"]):
-                                text.position = tuple(label_poses[i])
-                    else:
-                        if label_poses.ndim == 1:  # Single vector
-                            vector_data["text_objs"] = self._draw_single_text(label, label_poses, color)
-                        elif label_poses.ndim == 2:  # Multiple vectors
-                            vector_data["text_objs"] = []
-                            for i, label_pos in enumerate(label_poses):
-                                vector_data["text_objs"].append(self._draw_single_text(label[i] if isinstance(label, list) else label, label_pos, color[i] if isinstance(color, list) else color))
-
-    def _draw_single_vector(self, vector, color):
-        """
-        Draws a single vector with the specified color.
-        :param vector: The vector to draw.
-        :param color: The color of the vector.
-        """
-        line = self.conn.drawing.add_direction_from_com(vector, self.refframe, length=1)
-        line.color = color
-        return line
-
-    def _draw_single_text(self, label, label_pos, color):
-        """
-        Draws a single text label at the specified position and color.
-        :param label: The text label to draw.
-        :param label_pos: The position of the label.
-        :param color: The color of the label.
-        """
-        text = self.conn.drawing.add_text(text=label, reference_frame=self.text_refframe, position=label_pos, rotation=(1, 0, 0, 0))
-        text.color = color
-        return text
-
-    def _normalize_vectors(self, vectors):
-        """
-        Normalizes vectors to unit length.
-        :param vectors: A single vector (1D) or multiple vectors (2D array).
-        :return: Normalized vectors.
-        """
-        if vectors.ndim == 1:  # Single vector
-            return vectors / np.linalg.norm(vectors)
-        elif vectors.ndim == 2:  # Multiple vectors
-            return np.array([vec / np.linalg.norm(vec) for vec in vectors])
-
-    def _get_random_color(self):
-        """Returns a random color from the XKCD color list."""
-        hex_color = random.choice(self.xkcd_colors)  # Pick a random hex color
-        return mcolors.to_rgb(hex_color)  # Convert hex to an RGB tuple
-
-    def clear_vectors(self):
-        """Clears all currently drawn vectors."""
-        self.conn.drawing.clear()
-        for vector_data in self.vector_computations.values():
-            vector_data.pop("line_objs", None)
-            vector_data.pop("text_objs", None)
-
-    def start_drawing(self, dt=0.1):
-        """Starts automatic updating of vectors in a separate thread with interval dt."""
-        if not self._updating:
-            self._updating = True
-            self._update_thread = threading.Thread(target=self._auto_update, args=(dt,))
-            self._update_thread.start()
-            print("Automatic vector updating started.")
-
-    def _auto_update(self, dt):
-        """Runs draw_vectors at specified intervals until stopped."""
-        while self._updating:
-            self.draw_vectors()
-            time.sleep(dt)
-
-    def stop_drawing(self):
-        """Stops the automatic updating thread and clears vectors."""
-        if self._updating:
-            self._updating = False
-            self._update_thread.join()
-            self.clear_vectors()  # Clear vectors on stop
-            print("Automatic vector updating stopped and vectors cleared.")
-
 
 class VectorDrawer:
 
