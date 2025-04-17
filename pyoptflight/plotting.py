@@ -567,7 +567,7 @@ def plot_flight_data(solver: Solver,
         ax.set_title('Throttle')
         ax.set_xlabel(x_label)
         ax.set_ylabel('Throttle [%]')
-        ax.legend()
+        ax.legend(loc='upper right', ncol=2, fontsize=8)
         ax.grid(True)
         ax.margins(x=0)
         
@@ -646,7 +646,7 @@ def plot_flight_data(solver: Solver,
         ax.set_title('Body Angular Rates')
         ax.set_xlabel(x_label)
         ax.set_ylabel('Body Angular ['+angle_label+'/s]')
-        ax.legend()
+        ax.legend(loc='lower right', ncol=2, fontsize=8)
         ax.grid(True)
         ax.margins(x=0)
 
@@ -659,7 +659,7 @@ def plot_flight_data(solver: Solver,
         ax.set_title('Attitude')
         ax.set_xlabel(x_label)
         ax.set_ylabel('Attitude ['+angle_label+']')
-        ax.legend()
+        ax.legend(loc='lower left', ncol=2, fontsize=8)
         ax.grid(True)
         ax.margins(x=0)
 
@@ -731,7 +731,6 @@ def plot_flight_data(solver: Solver,
 
     fig_width = best_ncols * aspect_ratio * best_h
     fig_height = best_nrows * best_h
-    print(f"n_plots = {n_plots}: ncols = {best_ncols}, nrows = {best_nrows}, figsize = ({fig_width}, {fig_height})")
     fig, axes = plt.subplots(nrows=best_nrows, ncols=best_ncols, figsize=(fig_width, fig_height))
     axes = [axes] if n_plots == 1 else axes.flatten()
 
