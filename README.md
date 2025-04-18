@@ -27,9 +27,11 @@ PyOptFlight/
 │   ├── boundary_objects.py
 │   ├── functions.py
 │   ├── initialize.py
+│   ├── physics.py
 │   ├── plotting.py
 │   ├── setup.py
-│   └── solver.py
+│   ├── solver.py
+│   └── theory.ipynb
 ├── scripts/
 │   └── (testing and development code)
 └── ksp_interface/
@@ -37,16 +39,16 @@ PyOptFlight/
 ```
 
 ## Future Development
-- Branching for New Solvers:
-  - Fatrop Branch: A dedicated branch for a Fatrop implementation.
-  - Opti Stack Branch: A branch to integrate CasADi's Opti Stack.
+- Initialization options using global solvers such as ISRES
 - Enhanced Integration: Plans to further integrate the KSP interface with the core PyOptFlight functionality.
+- Add a license when appropriate
 
 ## Dependencies
-PyOptFlight is built around CasADi's NLP solver. The main branch uses an IPOPT implementation. Future branches may include support for Fatrop and CasADi's Opti Stack.
+PyOptFlight is built around CasADi's NLP solvers
 ### Requires:
 - Python 3.6 or later
 - CasADi 3.6.7 or later
+- A bunch of other stuff TBD
 
 ## Installation
 1. Clone the repository
@@ -55,3 +57,6 @@ PyOptFlight is built around CasADi's NLP solver. The main branch uses an IPOPT i
    cd PyOptFlight
    ```
 2. Install dependencies
+
+## Disclaimer
+This software is intended for academic and research purposes only. It is based entirely on publicly available information and does not contain or reference any export-controlled technology to the best of my knowledge. This code is not licensed for reuse. Please do not use, copy, or redistribute until a license is added.
