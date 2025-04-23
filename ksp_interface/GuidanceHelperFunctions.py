@@ -238,11 +238,15 @@ class VectorDrawer:
                             rotation = self._compute_text_rotation(norm_vectors[i], [0, 0, 0])
                             text.position = tuple(label_poses[i])
                             text.rotation = rotation
+                            label = labels[i]
+                            if callable(label):
+                                text.content = str(label())
                     else:
                         vector_data["text_objs"] = []
                         for i, label_pos in enumerate(label_poses):
+                            label_str = str(labels[i]()) if callable(labels[i]) else labels[i]
                             rotation = self._compute_text_rotation(norm_vectors[i], [0, 0, 0])
-                            vector_data["text_objs"].append(self._draw_single_text(labels[i], label_pos, colors[i], rot=rotation))
+                            vector_data["text_objs"].append(self._draw_single_text(label_str, label_pos, colors[i], rot=rotation))
 
     def _draw_single_vector(self, vector, color):
         """
