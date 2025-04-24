@@ -70,6 +70,7 @@ class Recording:
         self.paused = conn.add_stream(getattr, conn.krpc, 'paused')
         self.warp_rate = conn.add_stream(getattr, conn.space_center, 'warp_rate')
         self.game_time = game_time
+        self._lock = threading.Lock()
 
     def register_stream_func(self, key, stream_func):
         """Adds a function to data streams available to be recorded."""
@@ -84,9 +85,11 @@ class Recording:
             if self.stream_funcs['thrust']() == 0 and self.stages_to_go > 0:
                 self.vessel.control.activate_next_stage()
                 self.stages_to_go -= 1
-
-        for key in self.data.keys():
-            self.data[key].append(self.stream_funcs[key]())
+        
+        # Thread locking so other threads can access the real-time data
+        with self._lock:
+            for key in self.data.keys():
+                self.data[key].append(self.stream_funcs[key]())
 
     def start_recording(self, dt):
         """Starts automated recording in a separate thread."""
@@ -142,6 +145,11 @@ class Recording:
             print(f"Recording saved to {filename}.json")
         else:
             raise ValueError("Unsupported format. Please choose 'npz' or 'json'.")
+        
+    def snapshot(self):
+        """Returns a copy of the data dictionary at the time when called."""
+        with self._lock:
+            return {k: list(v) for k,v in self.data.items()}
 
 class VectorDrawer:
 
