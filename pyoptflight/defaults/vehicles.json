@@ -58,5 +58,42 @@
             "m_0": 5.8,
             "m_f": 1.3
         }
+    ],
+    "two_stage_test": [
+        {
+            "aero": {
+                "C_A": [],
+                "C_Ny": [],
+                "C_Nz": [],
+                "A_ref": 1
+            },
+            "prop": {
+                "Isp_SL": 1,
+                "Isp_vac": 1,
+                "F_SL": 1,
+                "F_vac": 1
+            },
+            "constraints": {},
+            "m_0": 1,
+            "m_f": 1
+        },
+        {
+            "aero": {
+                "C_A": [],
+                "C_Ny": [],
+                "C_Nz": [],
+                "A_ref": 1
+            },
+            "prop": {
+                "Isp_SL": 1,
+                "Isp_vac": 1,
+                "F_SL": 1,
+                "F_vac": 1
+            },
+            "constraints": {},
+            "m_0": 1,
+            "m_f": 1
+        }
+        
     ]
 }
