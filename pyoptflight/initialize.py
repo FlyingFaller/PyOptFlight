@@ -54,16 +54,17 @@ def _linear_methods(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, 
 
     ### PREP ###
     spacing = opts.get('spacing', 'T_init')
-    if spacing == 'equal':
-        seg_props = np.ones((context.nstages))/context.nstages
-    elif spacing == 'dV':
-        dV_stages = np.array([0.5*9.81e-3*(stage.prop.Isp_vac + stage.prop.Isp_SL)*np.log(stage.m_0/stage.m_f) for stage in context.stages])
-        dV_available = np.sum(dV_stages)
-        seg_props = dV_stages/dV_available
-    elif spacing == 'T_init':
-        seg_props = np.array(context.T_init)/context.T_sum
-    else:
-        raise Exception(f"Spacing {spacing} does not exist. Choose from 'equal', 'dV', or T_init (default).")
+    match spacing:
+        case 'equal':
+            seg_props = np.ones((context.nstages))/context.nstages
+        case 'dV':
+            dV_stages = np.array([0.5*9.81e-3*(stage.prop.Isp_vac + stage.prop.Isp_SL)*np.log(stage.m_0/stage.m_f) for stage in context.stages])
+            dV_available = np.sum(dV_stages)
+            seg_props = dV_stages/dV_available
+        case 'T_init':
+            seg_props = np.array(context.T_init)/context.T_sum
+        case _:
+            raise Exception(f"Spacing {spacing} does not exist. Choose from 'equal', 'dV', or T_init (default).")
     
     p0, p1 = x_data['x0']['pos'], x_data['xf']['pos']
     v0, v1 = x_data['x0']['vel'], x_data['xf']['vel']

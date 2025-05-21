@@ -399,23 +399,25 @@ class Solver(AutoRepr):
             ode = stage_physics.ode(x, u)
             F_ode = ca.Function('F_ode', [x, u], [ode])
             dt = ca.SX.sym("dt")
-            if self.context.config.integration_method == 'RK4': # Implement more int methods later RK4
-                k1 = F_ode(x, u)
-                k2 = F_ode(x + dt/2 * k1, u)
-                k3 = F_ode(x + dt/2 * k2, u)
-                k4 = F_ode(x + dt * k3, u)
-                x_next = x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
-                F_int = ca.Function('F_int', [x, u, dt], [x_next])
-            elif self.context.config.integration_method == 'cvodes':
-                dae = {'x': x, 'u':u, 'p': dt, 'ode': dt*F_ode(x, u)}
-                int_opts = {'nonlinear_solver_iteration': 'functional'}
-                I = ca.integrator('I', 'cvodes', dae, 0.0, 1.0, int_opts)
-                x_mx = ca.MX.sym('[m, px, py, pz, vx, vy, vz]', 7, 1)
-                u_mx = ca.MX.sym('[f, psi, theta]', 3, 1)
-                dt_mx = ca.MX.sym('dt_mx')
-                F_int = ca.Function('F_int', [x_mx, u_mx, dt_mx], [I(x0=x_mx, u=u_mx, p=dt_mx)['xf']])
-            else:
-                raise NotImplementedError(f'{self.context.config.integration_method} is not an implmented integrator.')
+            
+            match self.context.config.integration_method:
+                case 'RK4':
+                    k1 = F_ode(x, u)
+                    k2 = F_ode(x + dt/2 * k1, u)
+                    k3 = F_ode(x + dt/2 * k2, u)
+                    k4 = F_ode(x + dt * k3, u)
+                    x_next = x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+                    F_int = ca.Function('F_int', [x, u, dt], [x_next])
+                case 'cvodes':
+                    dae = {'x': x, 'u':u, 'p': dt, 'ode': dt*F_ode(x, u)}
+                    int_opts = {'nonlinear_solver_iteration': 'functional'}
+                    I = ca.integrator('I', 'cvodes', dae, 0.0, 1.0, int_opts)
+                    x_mx = ca.MX.sym('[m, px, py, pz, vx, vy, vz]', 7, 1)
+                    u_mx = ca.MX.sym('[f, psi, theta]', 3, 1)
+                    dt_mx = ca.MX.sym('dt_mx')
+                    F_int = ca.Function('F_int', [x_mx, u_mx, dt_mx], [I(x0=x_mx, u=u_mx, p=dt_mx)['xf']])
+                case _:
+                    raise NotImplementedError(f'{self.context.config.integration_method} is not an implmented integrator.')    
             integrators.append(F_int)
 
         for i in range(0, sum_N): # loop through 1st to kNth node, exluding kN+1th node

@@ -152,15 +152,16 @@ def plot_trajectory(fig, pos, vel, ctrl,
 
     # Maybe add AoA or Max Q colorscales later ? # TODO
     N = len(x)
-    if colorscale == 'f':
-        color_dict = dict(color=f, colorscale='viridis', width=7, cmin=0, cmax=1)
-        cscale = scale + f
-    elif colorscale == 'vel':
-        color_dict = dict(color=vmag, colorscale='viridis', width=7, cmin=cmin, cmax=cmax)
-        cscale = scale + vmag
-    else:
-        color_dict = dict(color=color, width=7)
-        cscale = scale + 0.5*np.ones(N)
+    match colorscale:
+        case 'f':
+            color_dict = dict(color=f, colorscale='viridis', width=7, cmin=0, cmax=1)
+            cscale = scale + f
+        case 'vel':
+            color_dict = dict(color=vmag, colorscale='viridis', width=7, cmin=cmin, cmax=cmax)
+            cscale = scale + vmag
+        case _:
+            color_dict = dict(color=color, width=7)
+            cscale = scale + 0.5*np.ones(N)
 
     fig.add_trace(go.Scatter3d(x=x, y=y, z=z, 
                                mode='lines', 
@@ -171,14 +172,15 @@ def plot_trajectory(fig, pos, vel, ctrl,
     if markers is not None:
         num_steps = max(2, round(N/freq)+1)
         for i in np.linspace(0, N - 2, num_steps, dtype=int):
-            if markers == 'ctrl':
-                mkr_dir = np.array([
-                    np.cos(psi[i])*np.cos(theta[i]),
-                    np.sin(psi[i])*np.cos(theta[i]),
-                    -np.sin(theta[i])
-                ])*cscale[i]
-            elif markers == 'vel':
-                mkr_dir = vel[i]/vmag[i]*cscale[i]
+            match markers:
+                case 'ctrl':
+                    mkr_dir = np.array([
+                        np.cos(psi[i])*np.cos(theta[i]),
+                        np.sin(psi[i])*np.cos(theta[i]),
+                        -np.sin(theta[i])
+                    ])*cscale[i]
+                case 'vel':
+                    mkr_dir = vel[i]/vmag[i]*cscale[i]
 
             # For cones, mimic a solid color by using a constant colorscale.
             if colorscale is None:
@@ -453,15 +455,16 @@ def plot_solutions(solver: Solver,
             e, a, i, ω, Ω, ν, h_vec, e_vec = state_to_kep(np.array(pos_vel), solver.context.body.mu)
             fig = plot_orbit(fig, e, a, i, ω, Ω, solver.context.body.mu)
 
-        if colorscale == 'vel':
-            cmin = min([np.min(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.stage_sols[idx]])
-            cmax = max([np.max(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.stage_sols[idx]])
-        elif colorscale == 'f':
-            cmin = 0
-            cmax = 1
-        else:
-            cmin = 0
-            cmax = 1
+        match colorscale:
+            case 'vel':
+                cmin = min([np.min(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.stage_sols[idx]])
+                cmax = max([np.max(np.sum((np.array(sol.X)[:, 4:7])**2, axis=1)**0.5) for sol in solver.stage_sols[idx]])
+            case 'f':
+                cmin = 0
+                cmax = 1
+            case _:
+                cmin = 0
+                cmax = 1
 
         for k in range(0, solver.context.nstages):
             sol = solver.stage_sols[idx][k]

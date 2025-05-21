@@ -69,13 +69,14 @@ class ConstraintSet(AutoRepr):
         """
         merged = cls()  # Create an empty ConstraintSet to populate.
         for name in cls.CONSTRAINT_NAMES:
-            if force_source == 'global':
-                base = global_cs[name]
-            elif force_source == 'stage':
-                base = stage_cs[name]
-            else:
-                # Default behavior: use stage if a value is defined, otherwise use global.
-                base = stage_cs[name] if stage_cs[name].value is not None else global_cs[name]
+            match force_source:
+                case 'global':
+                    base = global_cs[name]
+                case 'stage':
+                    base = stage_cs[name]
+                case _:
+                    # Default behavior: use stage if a value is defined, otherwise use global.
+                    base = stage_cs[name] if stage_cs[name].value is not None else global_cs[name]
             # Construct a new Constraint using both the value and the enabled flag.
             setattr(merged, name, Constraint(base.value, base.enabled))
         return merged

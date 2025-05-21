@@ -132,19 +132,20 @@ class Recording:
         
         self.warp_rate.remove()
         self.paused.remove()
-
-        if format == "npz":
-            np.savez(filename + '.npz', **{key: np.array(self.data[key]) for key in self.stream_funcs.keys()})
-            print(f"Recording saved to {filename}.npz")
-        elif format == "json":
-            with open(filename + '.json', 'w') as json_file:
-                # Convert numpy arrays to lists for JSON serialization
-                json_data = {key: np.array(self.data[key]).tolist() for key in self.stream_funcs.keys()}
-                # json.dump(json_data, json_file, indent=4) # Pretty printing if it needs to be uber human readable
-                json.dump(json_data, json_file)
-            print(f"Recording saved to {filename}.json")
-        else:
-            raise ValueError("Unsupported format. Please choose 'npz' or 'json'.")
+        
+        match format:
+            case 'npz':
+                np.savez(filename + '.npz', **{key: np.array(self.data[key]) for key in self.stream_funcs.keys()})
+                print(f"Recording saved to {filename}.npz")
+            case "json":
+                with open(filename + '.json', 'w') as json_file:
+                    # Convert numpy arrays to lists for JSON serialization
+                    json_data = {key: np.array(self.data[key]).tolist() for key in self.stream_funcs.keys()}
+                    # json.dump(json_data, json_file, indent=4) # Pretty printing if it needs to be uber human readable
+                    json.dump(json_data, json_file)
+                    print(f"Recording saved to {filename}.json")
+            case _:
+                raise ValueError("Unsupported format. Please choose 'npz' or 'json'.")
         
     def snapshot(self):
         """Returns a copy of the data dictionary at the time when called."""
