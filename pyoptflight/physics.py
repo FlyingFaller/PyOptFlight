@@ -6,9 +6,14 @@ if TYPE_CHECKING:
     from .solver import SolverContext
 
 class StagePhysics(AutoRepr):
-    def __init__(self, context: "SolverContext", stage: "Stage", f_min: float = 0):
+    def __init__(self, context: "SolverContext", stage: "Stage"):
         self.stage = stage
         self.context = context
+        f_min_constr = self.context.f_min
+        if f_min_constr.enabled and f_min_constr.value is not None:
+            f_min = f_min_constr.value
+        else:
+            f_min = 0
         self.f_min = f_min
 
     def h(self, px, py, pz):
