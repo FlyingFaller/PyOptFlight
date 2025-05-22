@@ -143,7 +143,7 @@ class Recording:
                     json_data = {key: np.array(self.data[key]).tolist() for key in self.stream_funcs.keys()}
                     # json.dump(json_data, json_file, indent=4) # Pretty printing if it needs to be uber human readable
                     json.dump(json_data, json_file)
-                    print(f"Recording saved to {filename}.json")
+                print(f"Recording saved to {filename}.json")
             case _:
                 raise ValueError("Unsupported format. Please choose 'npz' or 'json'.")
         
