@@ -10,19 +10,20 @@ from .physics import StagePhysics
 @dataclass(repr=False)
 class SolverContext(AutoRepr):
     """Context object for the solver. Designed to be passed around to functions."""
-    body   : "Body"                                    # Immutable
-    stages : list["Stage"]                             # Immutable
-    config : "SolverConfig"                            # Immutable
-    nstages: int = 0                                   # Immutable
-    N      : list[int] = field(default_factory=list)   # Immutable
-    T_init : list[float] = field(default_factory=list) # Immutable
-    T_min  : list[float] = field(default_factory=list) # Immutable
-    T_max  : list[float] = field(default_factory=list) # Immutable
-    T_sum  : float = 0.0                               # Mutable
-    Nx     : int = 0                                   # Immutable
-    Nu     : int = 0                                   # Immutable
-    use_atm: bool = False                              # Immutable
-    delta  : float = 0.01                              # Immutable
+    body        : "Body"                                    # Immutable
+    stages      : list["Stage"]                             # Immutable
+    config      : "SolverConfig"                            # Immutable
+    constraints : list["ConstraintSet"]                     # Mutable
+    nstages     : int = 0                                   # Immutable
+    N           : list[int] = field(default_factory=list)   # Immutable
+    T_init      : list[float] = field(default_factory=list) # Immutable
+    T_min       : list[float] = field(default_factory=list) # Immutable
+    T_max       : list[float] = field(default_factory=list) # Immutable
+    T_sum       : float = 0.0                               # Mutable
+    Nx          : int = 0                                   # Immutable
+    Nu          : int = 0                                   # Immutable
+    use_atm     : bool = False                              # Immutable
+    delta       : float = 0.01                              # Immutable
 
     def __post_init__(self):
         # Assign T_init, T_min, T_max lists using global default in config or stage value
@@ -38,6 +39,16 @@ class SolverContext(AutoRepr):
         self.Nx = self.Nu + self.nstages
         self.T_sum = sum(self.T_init)
         self.use_atm = False if self.body.atm is None else True
+
+        # Merge global constraints with stage constraints
+        self.constraints = [
+            ConstraintSet.merge(
+                global_cs=self.config.global_constraints,
+                stage_cs=stage.constraints,
+                force_source=self.config.force_constraints
+            )
+            for stage in self.stages
+        ]
 
 @dataclass(repr=False)
 class StageSolution(AutoRepr):
@@ -64,9 +75,10 @@ class FlightSolution(AutoRepr):
             self.nodes = np.concatenate((self.nodes, [node]))
             self.constraint.append(constraint)
             
-    def __init__(self, sols: List[StageSolution], 
+    def __init__(self, 
+                 sols: List[StageSolution], 
                  context: "SolverContext",
-                 constraints: List[ConstraintSet]):
+                 physics: List[StagePhysics]):
         
         def stack(arrays) -> np.ndarray:
             result = np.array(arrays[0])
@@ -102,21 +114,11 @@ class FlightSolution(AutoRepr):
         cum_N = np.concatenate(([0], np.cumsum(N))) # stage boundaries by index
         sum_N = np.sum(N) # total number of nodes kN
         nstages = context.nstages
-        stages = context.stages
-        cs_list = constraints
+        cs_list = context.constraints
         t_list = stack([np.linspace(cum_T[i], cum_T[i+1], N[i]+1) for i in range(nstages)])
         N_list = stack([np.arange(cum_N[i], cum_N[i+1]+1) for i in range(nstages)])
         X = stack([sol.X for sol in sols])
         U = np.concatenate([sol.U for sol in sols])
-
-        physics: List[StagePhysics] = []
-        for k in range(nstages):
-            f_min_constr = cs_list[k].f_min
-            if f_min_constr.enabled and f_min_constr.value is not None:
-                f_min = f_min_constr.value
-            else:
-                f_min = 0
-            physics.append(StagePhysics(context, stages[k], f_min))
 
         for i in range(sum_N+1):
             k = np.searchsorted(cum_N[:-1], i, side='right') - 1 # 'current' stage index, this breaks down at stage interfaces
@@ -188,10 +190,12 @@ class Solver(AutoRepr):
         self.context = SolverContext(body, stages, config)
         self.x0 = x0 ### Starting point (obj)
         self.xf = xf ### Ending point (obj)
+        self.physics: List[StagePhysics] = []
+        self.update_physics()
 
         self.stage_sols: List[List[StageSolution]] = []
         self.flight_sols: List[FlightSolution] = []
-
+        
         # Can pass sols to pre-initialize, but defaults to uninitialized. TODO: May remove. 
         self.initialized = False
         self.status = None
@@ -201,9 +205,9 @@ class Solver(AutoRepr):
         self.iter_count = 0
         self.nsolves = 0
 
-        # Select constraints
-        self.constraints = [None]*self.context.nstages
-        self.merge_constraints(force_source=config.force_constraints)
+     # Sets physics for the stage, broken out to a seperate function so this can be called every time physics is used/contraints are updated
+    def update_physics(self) -> None:
+        self.physics = [StagePhysics(self.context, stage) for stage in self.context.stages]
 
     def stats(self) -> Dict:
         """Returns basic stats of overall solve"""
@@ -225,8 +229,10 @@ class Solver(AutoRepr):
         iter_count: Optional[int] = None,
         runtime: Optional[float] = None,
     ) -> None:
+        
+        self.update_physics() # update physics whenever we attempt to generate FlightSolution from solves just in case
         self.stage_sols.append(sols)
-        self.flight_sols.append(FlightSolution(sols, self.context, self.constraints))
+        self.flight_sols.append(FlightSolution(sols, self.context), self.physics)
 
         self.status = status if status is not None else self.status
         self.success = success if success is not None else self.success
@@ -270,7 +276,7 @@ class Solver(AutoRepr):
                         If set to 'stage', re-merge using only the stage constraints.
                         If None (default), use stage constraints if defined, otherwise fallback to global.
         """
-        self.constraints = [
+        self.context.constraints = [
             ConstraintSet.merge(
                 global_cs=self.context.config.global_constraints,
                 stage_cs=stage.constraints,
@@ -317,11 +323,11 @@ class Solver(AutoRepr):
             raise ValueError("Length of new_enables must match length of constraint_names")
         
         # Determine which stages to update.
-        stage_indices = np.array(stages)-1 if stages is not None else range(len(self.constraints))
+        stage_indices = np.array(stages)-1 if stages is not None else range(len(self.context.constraints))
         
         # Loop through the specified stages and update the constraints.
         for idx in stage_indices:
-            cs = self.constraints[idx]
+            cs = self.context.constraints[idx]
             for i, name in enumerate(constraint_names):
                 # Update the constraint value if provided.
                 if new_values is not None:
@@ -339,11 +345,11 @@ class Solver(AutoRepr):
             stage_indices: List of stage indices to update. If None, update all stages.
         """
         if stage_indices is None:
-            stage_indices = range(len(self.constraints))
+            stage_indices = range(len(self.context.constraints))
         else:
             stage_indices = np.array(stage_indices)-1
         for i in stage_indices:
-            self.constraints[i].set_all_enabled(enabled)
+            self.context.constraints[i].set_all_enabled(enabled)
 
     def create_nlp(self) -> None:
         # This version will work the the structure:
@@ -369,7 +375,8 @@ class Solver(AutoRepr):
         sum_N = np.sum(N) # total number of nodes kN
         nstages = self.context.nstages
         stages = self.context.stages
-        cs_list = self.constraints
+        cs_list = self.context.constraints
+        self.update_physics() # call this in case constraints have changed
 
         ### symbolic state and control vectors ###
         x = ca.SX.sym('[m, px, py, pz, vx, vy, vz]', 7, 1)
@@ -386,17 +393,9 @@ class Solver(AutoRepr):
         G = [] # leave constraints to be filled out later
         
         # setup physics and itegrators for each stage
-        physics: List[StagePhysics] = []
         integrators = []
         for k in range(nstages):
-            f_min_constr = cs_list[k].f_min
-            if f_min_constr.enabled and f_min_constr.value is not None:
-                f_min = f_min_constr.value
-            else:
-                f_min = 0
-            stage_physics = StagePhysics(self.context, stages[k], f_min)
-            physics.append(stage_physics)
-            ode = stage_physics.ode(x, u)
+            ode = self.physics[k].ode(x, u)
             F_ode = ca.Function('F_ode', [x, u], [ode])
             dt = ca.SX.sym("dt")
             
@@ -456,14 +455,14 @@ class Solver(AutoRepr):
                 if max_cs.max_body_rate_z.enabled and max_cs.max_body_rate_z.value is not None:
                     G.append((U[i][2]-U[i-1][2])/dt)
                 if max_cs.max_q.enabled and max_cs.max_q.value is not None: # max q
-                    G.append(physics[k].q(X[i]))
+                    G.append(self.physics[k].q(X[i]))
 
             if not first_loop_node and not last_loop_node: # control node constraints
                 # f_min and alpha constraints
                 if cs_list[k].f_min.enabled and cs_list[k].f_min.value is not None:
                     G.append((U[i][0] - cs_list[k].f_min.value + self.context.delta)*(U[i][0] - cs_list[k].f_min.value))
                 if cs_list[k].max_alpha.enabled and cs_list[k].max_alpha.value is not None:
-                    G.append(physics[k].cos_alpha(X[i], U[i]))
+                    G.append(self.physics[k].cos_alpha(X[i], U[i]))
 
         ge_f = self.xf.get_ge(X[-1], U[-1], T_sum, self.context)
         G += ge_f['g']
@@ -499,7 +498,7 @@ class Solver(AutoRepr):
         sum_N = np.sum(N) # total number of nodes kN
         nstages = self.context.nstages
         stages = self.context.stages
-        cs_list = self.constraints
+        cs_list = self.context.constraints
 
         # create x0
         x0 += [sol.T for sol in self.stage_sols[-1]]
