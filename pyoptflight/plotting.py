@@ -468,7 +468,7 @@ def plot_solutions(solver: Solver,
 
         for k in range(0, solver.context.nstages):
             sol = solver.stage_sols[idx][k]
-            f_min_constr = solver.constraints[k].f_min
+            f_min_constr = solver.context.constraints[k].f_min
             f_min = f_min_constr.value if f_min_constr.enabled and f_min_constr.value is not None else 0
 
             U = np.array(sol.U)
