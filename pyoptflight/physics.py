@@ -1,37 +1,57 @@
 import casadi as ca
 from .functions import AutoRepr
-from .setup import Stage
+from .setup import Stage, Body, SolverConfig, ConstraintSet
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .solver import SolverContext
 
 class StagePhysics(AutoRepr):
-    def __init__(self, context: "SolverContext", stage: "Stage"):
+    def __init__(self, 
+                 stage: "Stage", 
+                 body: "Body", 
+                 config: "SolverConfig", 
+                 constraints: "ConstraintSet", 
+                 delta: float):
         self.stage = stage
-        self.context = context
-        f_min_constr = self.context.f_min
+        self.body = body
+        self.config = config
+        self.constraints = constraints
+        self.delta = delta
+        f_min_constr = self.constraints.f_min
         if f_min_constr.enabled and f_min_constr.value is not None:
             f_min = f_min_constr.value
         else:
             f_min = 0
         self.f_min = f_min
 
+    @classmethod
+    def create_physics(cls, context: "SolverContext") -> list["StagePhysics"]:
+        physics_list = []
+        for k in range(context.nstages):
+            stage_physics = cls(context.stages[k], 
+                                context.body, 
+                                context.config, 
+                                context.constraints[k], 
+                                context.delta)
+            physics_list.append(stage_physics)
+        return physics_list
+
     def h(self, px, py, pz):
         """Altitude"""
-        return ca.sqrt(px**2 + py**2 + pz**2) - self.context.body.r_0
+        return ca.sqrt(px**2 + py**2 + pz**2) - self.body.r_0
     
     def F_max(self, px, py, pz):
         """Max thrust"""
         h = self.h(px, py, pz)
         F_vac = self.stage.prop.F_vac
         F_SL = self.stage.prop.F_SL
-        H = self.context.body.atm.H
+        H = self.body.atm.H
         F_max = F_vac + (F_SL - F_vac)*ca.exp(-h/H)
         return F_max
     
     def f_eff(self, f):
         """Effective throttle output"""
-        return f - f*ca.fmax(0, ca.fmin(1, (self.f_min - f)/self.context.delta))
+        return f - f*ca.fmax(0, ca.fmin(1, (self.f_min - f)/self.delta))
     
     def F_eff(self, px, py, pz, f):
         """Effective thrust"""
@@ -44,24 +64,24 @@ class StagePhysics(AutoRepr):
         h = self.h(px, py, pz)
         Isp_vac = self.stage.prop.Isp_vac
         Isp_SL = self.stage.prop.Isp_SL
-        H = self.context.body.atm.H
+        H = self.body.atm.H
         Isp = Isp_vac + (Isp_SL - Isp_vac)*ca.exp(-h/H)
         return Isp
 
     def g(self, px, py, pz):
         """Gravity vector"""
-        g_0 = self.context.body.g_0
-        r_0 = self.context.body.r_0
+        g_0 = self.body.g_0
+        r_0 = self.body.r_0
         return -g_0*r_0**2*(px**2 + py**2 + pz**2)**(-3/2)*ca.vertcat(px, py, pz)
     
     def rho(self, px, py, pz):
         """Local atmospheric density"""
         h = self.h(px, py, pz)
-        return self.context.body.atm.rho_0*ca.exp(-h/self.context.body.atm.H)
+        return self.body.atm.rho_0*ca.exp(-h/self.body.atm.H)
     
     def wind(self, px, py, pz):
         """Wind vector in inertial frame"""
-        omega_0 = self.context.body.omega_0
+        omega_0 = self.body.omega_0
         return ca.vertcat(-omega_0*py, omega_0*px, 0)
     
     def v_rel(self, px, py, pz, vx, vy, vz):
@@ -116,7 +136,7 @@ class StagePhysics(AutoRepr):
         f, psi, theta = u[0], u[1], u[2]
         ebx = self.ebx(psi, theta)
         v_rel = self.v_rel(px, py, pz, vx, vy, vz)
-        v_rel = -v_rel if self.context.config.landing else v_rel
+        v_rel = -v_rel if self.config.landing else v_rel
         return ca.dot(v_rel, ebx)/ca.norm_2(v_rel)
     
     def q(self, x):
