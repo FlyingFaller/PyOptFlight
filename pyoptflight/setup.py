@@ -205,8 +205,8 @@ class Vehicle(AutoRepr):
         return iter(self.stages)
     
     @classmethod
-    def load_vehicle(cls, path:str) -> "Vehicle":
-        vehicle_path = f"defaults/{path}/vehicle.json"
+    def load_vehicle(cls, name:str) -> "Vehicle":
+        vehicle_path = f"defaults\\vehicles\\{name}\\vehicle.json"
         vehicle_dict = load_json(vehicle_path)
         vehicle_name = vehicle_dict.get("name", None)
         vehicle_description = vehicle_dict.get("description", None)

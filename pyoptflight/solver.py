@@ -10,20 +10,20 @@ from .physics import StagePhysics
 @dataclass(repr=False)
 class SolverContext(AutoRepr):
     """Context object for the solver. Designed to be passed around to functions."""
-    body        : "Body"                                    # Immutable
-    vehicle     : "Vehicle"                                 # Immutable
-    config      : "SolverConfig"                            # Immutable
-    constraints : list["ConstraintSet"]                     # Mutable
-    nstages     : int = 0                                   # Immutable
-    N           : list[int] = field(default_factory=list)   # Immutable
-    T_init      : list[float] = field(default_factory=list) # Immutable
-    T_min       : list[float] = field(default_factory=list) # Immutable
-    T_max       : list[float] = field(default_factory=list) # Immutable
-    T_sum       : float = 0.0                               # Mutable
-    Nx          : int = 0                                   # Immutable
-    Nu          : int = 0                                   # Immutable
-    use_atm     : bool = False                              # Immutable
-    delta       : float = 0.01                              # Immutable
+    body        : "Body"                                              # Immutable
+    vehicle     : "Vehicle"                                           # Immutable
+    config      : "SolverConfig"                                      # Immutable
+    constraints : list["ConstraintSet"] = field(default_factory=list) # Mutable
+    nstages     : int = 0                                             # Immutable
+    N           : list[int] = field(default_factory=list)             # Immutable
+    T_init      : list[float] = field(default_factory=list)           # Immutable
+    T_min       : list[float] = field(default_factory=list)           # Immutable
+    T_max       : list[float] = field(default_factory=list)           # Immutable
+    T_sum       : float = 0.0                                         # Mutable
+    Nx          : int = 0                                             # Immutable
+    Nu          : int = 0                                             # Immutable
+    use_atm     : bool = False                                        # Immutable
+    delta       : float = 0.01                                        # Immutable
 
     def __post_init__(self):
         # Assign T_init, T_min, T_max lists using global default in config or stage value
@@ -228,7 +228,7 @@ class Solver(AutoRepr):
         
         self.physics = StagePhysics.create_physics(self.context) # update physics whenever we attempt to generate FlightSolution from solves just in case
         self.stage_sols.append(sols)
-        self.flight_sols.append(FlightSolution(sols, self.context), self.physics)
+        self.flight_sols.append(FlightSolution(sols, self.context, self.physics))
 
         self.status = status if status is not None else self.status
         self.success = success if success is not None else self.success
