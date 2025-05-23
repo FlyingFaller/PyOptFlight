@@ -11,7 +11,7 @@ from .physics import StagePhysics
 class SolverContext(AutoRepr):
     """Context object for the solver. Designed to be passed around to functions."""
     body        : "Body"                                    # Immutable
-    stages      : list["Stage"]                             # Immutable
+    vehicle     : "Vehicle"                                 # Immutable
     config      : "SolverConfig"                            # Immutable
     constraints : list["ConstraintSet"]                     # Mutable
     nstages     : int = 0                                   # Immutable
@@ -27,6 +27,7 @@ class SolverContext(AutoRepr):
 
     def __post_init__(self):
         # Assign T_init, T_min, T_max lists using global default in config or stage value
+        self.stages = self.vehicle.stages
         attributes = ['N', 'T_init', 'T_min', 'T_max']
         for attr in attributes:
             setattr(self, attr, [
@@ -182,16 +183,15 @@ class FlightSolution(AutoRepr):
 class Solver(AutoRepr):
     def __init__(self, 
                  body: "Body", 
-                 stages: List["Stage"], 
+                 vehicle: "Vehicle", 
                  config: "SolverConfig", 
                  x0: BoundaryObj, 
                  xf: BoundaryObj):
         
-        self.context = SolverContext(body, stages, config)
+        self.context = SolverContext(body, vehicle, config)
         self.x0 = x0 ### Starting point (obj)
         self.xf = xf ### Ending point (obj)
-        self.physics: List[StagePhysics] = []
-        self.update_physics()
+        self.physics = StagePhysics.create_physics(self.context)
 
         self.stage_sols: List[List[StageSolution]] = []
         self.flight_sols: List[FlightSolution] = []
@@ -204,10 +204,6 @@ class Solver(AutoRepr):
         self.nlp_creation_time = 0
         self.iter_count = 0
         self.nsolves = 0
-
-     # Sets physics for the stage, broken out to a seperate function so this can be called every time physics is used/contraints are updated
-    def update_physics(self) -> None:
-        self.physics = [StagePhysics(self.context, stage) for stage in self.context.stages]
 
     def stats(self) -> Dict:
         """Returns basic stats of overall solve"""
@@ -230,7 +226,7 @@ class Solver(AutoRepr):
         runtime: Optional[float] = None,
     ) -> None:
         
-        self.update_physics() # update physics whenever we attempt to generate FlightSolution from solves just in case
+        self.physics = StagePhysics.create_physics(self.context) # update physics whenever we attempt to generate FlightSolution from solves just in case
         self.stage_sols.append(sols)
         self.flight_sols.append(FlightSolution(sols, self.context), self.physics)
 
@@ -376,7 +372,7 @@ class Solver(AutoRepr):
         nstages = self.context.nstages
         stages = self.context.stages
         cs_list = self.context.constraints
-        self.update_physics() # call this in case constraints have changed
+        self.physics = StagePhysics.create_physics(self.context) # call this in case constraints have changed
 
         ### symbolic state and control vectors ###
         x = ca.SX.sym('[m, px, py, pz, vx, vy, vz]', 7, 1)
