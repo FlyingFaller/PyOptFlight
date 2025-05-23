@@ -26,15 +26,14 @@ class StagePhysics(AutoRepr):
 
     @classmethod
     def create_physics(cls, context: "SolverContext") -> list["StagePhysics"]:
-        physics_list = []
-        for k in range(context.nstages):
-            stage_physics = cls(context.stages[k], 
-                                context.body, 
-                                context.config, 
-                                context.constraints[k], 
-                                context.delta)
-            physics_list.append(stage_physics)
-        return physics_list
+        return [
+            cls(context.stages[k], 
+                context.body, 
+                context.config, 
+                context.constraints[k], 
+                context.delta)
+            for k in range(context.nstages)
+        ]
 
     def h(self, px, py, pz):
         """Altitude"""
@@ -101,6 +100,43 @@ class StagePhysics(AutoRepr):
     def ebz(self, psi, theta):
         """Body frame z basis in intertial frame"""
         return ca.vertcat(ca.cos(psi)*ca.sin(theta), ca.sin(psi)*ca.sin(theta), ca.cos(theta))
+    
+    # Unlcear if these should be three functions or not
+    def cos_angles(self, x, u):
+        """Cosine angle between air-relative velocity vector and vehicle basis"""
+        m, px, py, pz, vx, vy, vz = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
+        f, psi, theta = u[0], u[1], u[2]
+        ebx = self.ebx(psi, theta)
+        eby = self.eby(psi, theta)
+        ebz = self.ebz(psi, theta)
+        v_rel = self.v_rel(px, py, pz, vx, vy, vz)
+        v_rel = -v_rel if self.config.landing else v_rel
+        cos_x = ca.dot(v_rel, ebx)/ca.norm_2(v_rel)
+        cos_y = ca.dot(v_rel, eby)/ca.norm_2(v_rel)
+        cos_z = ca.dot(v_rel, ebz)/ca.norm_2(v_rel)
+        return cos_x, cos_y, cos_z
+    
+    def T(self, px, py, pz):
+        """Returns the temperature at the position"""
+        h = self.h(px, py, pz)
+        return 273.15 # TODO!!
+
+    def mach_sqr(self, px, py, pz, vx, vy, vz):
+        """Returns the square of the mach number"""
+        # M = |v|/sqrt(gamma*R*T)
+        v_rel = self.v_rel(px, py, pz, vx, vy, vz)
+        T = self.T(px, py, pz)
+        gamma = self.body.atm.gamma
+        Rg = self.body.atm.Rg
+        return ca.sumsqr(v_rel)/(gamma*Rg*T)
+    
+    # Unclear if these should be one function or not
+    def C_A(self):
+        pass
+    def C_Ny(self):
+        pass
+    def C_Nz(self):
+        pass
 
     def ode(self, x, u):
         """ODE vector of x"""
@@ -132,13 +168,8 @@ class StagePhysics(AutoRepr):
     
     def cos_alpha(self, x, u):
         """Cosine of AoA"""
-        m, px, py, pz, vx, vy, vz = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
-        f, psi, theta = u[0], u[1], u[2]
-        ebx = self.ebx(psi, theta)
-        v_rel = self.v_rel(px, py, pz, vx, vy, vz)
-        v_rel = -v_rel if self.config.landing else v_rel
-        return ca.dot(v_rel, ebx)/ca.norm_2(v_rel)
-    
+        return self.cos_angles(x, u)[0]
+
     def q(self, x):
         """Dynamic pressure q"""
         m, px, py, pz, vx, vy, vz = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
