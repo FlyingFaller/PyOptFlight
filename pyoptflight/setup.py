@@ -144,34 +144,30 @@ class Stage(AutoRepr):
     """Stores rocket stage mass, aerodynamics, propulsion, and limits."""
     class Aerodynamics(AutoRepr):
         def __init__(self, aero_params):
-            self.C_D = aero_params.get("C_D")
-            self.C_L = aero_params.get("C_L")
-            self.C_A = aero_params.get("C_A")
-            self.C_Ny = aero_params.get("C_Ny")
-            self.C_Nz = aero_params.get("C_Nz")
+            self.C_D   = aero_params.get("C_D")
+            self.C_L   = aero_params.get("C_L")
+            self.C_A   = aero_params.get("C_A")
+            self.C_Ny  = aero_params.get("C_Ny")
+            self.C_Nz  = aero_params.get("C_Nz")
             self.A_ref = aero_params.get("A_ref")
-        
+            # TODO: load in C_A, C_Ny, C_Nz
+
     class Propulsion(AutoRepr):
         def __init__(self, prop_params):
             # TODO:  Add better modeling of pressure variant engine performance
             F = prop_params.get("F")
             Isp = prop_params.get("Isp")
-            self.F_SL = prop_params.get("F_SL", F)
-            self.F_vac = prop_params.get("F_vac", F)
-            self.Isp_SL = prop_params.get("Isp_SL", Isp)
+            self.F_SL    = prop_params.get("F_SL", F)
+            self.F_vac   = prop_params.get("F_vac", F)
+            self.Isp_SL  = prop_params.get("Isp_SL", Isp)
             self.Isp_vac = prop_params.get("Isp_vac", Isp)
         
     def __init__(self, stage_params):
-        file_path = r"defaults/stages.json"
-        example_stages = load_json(file_path)
-
-        if isinstance(stage_params, str):
-            if stage_params in example_stages:
-                stage_params = example_stages[stage_params]
-            else:
-                raise ValueError(f"Unknown default body: {stage_params}")
-        elif not isinstance(stage_params, dict):
+        if not isinstance(stage_params, dict):
             raise TypeError("Input must be a string or a dictionary")
+
+        self.name = stage_params.get("name", None)
+        self.description = stage_params.get("description", None)
 
         self.m_0 = stage_params.get("m_0")
         self.m_f = stage_params.get("m_f")
@@ -180,12 +176,12 @@ class Stage(AutoRepr):
 
         constraints = stage_params.get("constraints", {})
         self.constraints = ConstraintSet(
-            max_q         = constraints.get("max_q"),
-            max_alpha     = constraints.get("max_alpha"),
+            max_q           = constraints.get("max_q"),
+            max_alpha       = constraints.get("max_alpha"),
             max_body_rate_y = constraints.get("max_body_rate_y"),
-            max_body_rate_z  = constraints.get("max_body_rate_z"),
-            max_tau     = constraints.get("max_tau"),
-            f_min         = constraints.get("f_min")
+            max_body_rate_z = constraints.get("max_body_rate_z"),
+            max_tau         = constraints.get("max_tau"),
+            f_min           = constraints.get("f_min")
         )
 
         self.T_init = stage_params.get("T_init")
@@ -193,12 +189,30 @@ class Stage(AutoRepr):
         self.T_max = stage_params.get("T_max")
         self.N = stage_params.get("N")
 
+class Vehicle(AutoRepr):
+    def __init__(self, stages: List[Stage], name: str = None, description: str = None):
+        self.name = name
+        self.description = description
+        self.stages = stages
+
+    def __len__(self) -> int:
+        return len(self.stages)
+
+    def __getitem__(self, index: int) -> Stage:
+        return self.stages[index]
+
+    def __iter__(self):
+        return iter(self.stages)
+    
     @classmethod
-    def load_vehicle(cls, name: str) -> List["Stage"]:
-        default_vehicles = load_json(r"defaults/vehicles.json")
-        stage_params = default_vehicles[name]
-        vehicle = [cls(stage) for stage in stage_params]
-        return vehicle
+    def load_vehicle(cls, path:str) -> "Vehicle":
+        vehicle_path = f"defaults/{path}/vehicle.json"
+        vehicle_dict = load_json(vehicle_path)
+        vehicle_name = vehicle_dict.get("name", None)
+        vehicle_description = vehicle_dict.get("description", None)
+        stage_params_list = vehicle_dict.get('stages')
+        stages_objects = [Stage(stage_data) for stage_data in stage_params_list]
+        return cls(name=vehicle_name, description=vehicle_description, stages=stages_objects)
 
 class SolverConfig(AutoRepr):
     def __init__(self, **kwargs):
