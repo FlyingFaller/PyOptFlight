@@ -89,32 +89,19 @@ class StagePhysics(AutoRepr):
         vel = ca.vertcat(vx, vy, vz)
         return vel-wind
     
-    def ebx(self, psi, theta):
-        """Body frame x basis in intertial frame"""
-        return ca.vertcat(ca.cos(psi)*ca.cos(theta), ca.sin(psi)*ca.cos(theta), -ca.sin(theta))
-    
-    def eby(self, psi, theta):
-        """Body frame y basis in intertial frame"""
-        return ca.vertcat(-ca.sin(psi), ca.cos(psi), 0)
-    
-    def ebz(self, psi, theta):
-        """Body frame z basis in intertial frame"""
-        return ca.vertcat(ca.cos(psi)*ca.sin(theta), ca.sin(psi)*ca.sin(theta), ca.cos(theta))
-    
-    # Unlcear if these should be three functions or not
-    def cos_angles(self, x, u):
+    def vehicle_basis(self, psi, theta):
+        """Returns the vehicle basis vectors."""
+        ebx = ca.vertcat(ca.cos(psi)*ca.cos(theta), ca.sin(psi)*ca.cos(theta), -ca.sin(theta))
+        eby = ca.vertcat(-ca.sin(psi), ca.cos(psi), 0)
+        ebz = ca.vertcat(ca.cos(psi)*ca.sin(theta), ca.sin(psi)*ca.sin(theta), ca.cos(theta))
+        return ca.horzcat(ebx, eby, ebz)
+
+    def cos_angles(self, px, py, pz, vx, vy, vz, psi, theta):
         """Cosine angle between air-relative velocity vector and vehicle basis"""
-        m, px, py, pz, vx, vy, vz = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
-        f, psi, theta = u[0], u[1], u[2]
-        ebx = self.ebx(psi, theta)
-        eby = self.eby(psi, theta)
-        ebz = self.ebz(psi, theta)
+        basis = self.vehicle_basis(psi, theta)
         v_rel = self.v_rel(px, py, pz, vx, vy, vz)
         v_rel = -v_rel if self.config.landing else v_rel
-        cos_x = ca.dot(v_rel, ebx)/ca.norm_2(v_rel)
-        cos_y = ca.dot(v_rel, eby)/ca.norm_2(v_rel)
-        cos_z = ca.dot(v_rel, ebz)/ca.norm_2(v_rel)
-        return cos_x, cos_y, cos_z
+        return (basis.T @ v_rel)/ca.norm_2(v_rel)
     
     def T(self, px, py, pz):
         """Returns the temperature at the position"""
@@ -130,49 +117,55 @@ class StagePhysics(AutoRepr):
         Rg = self.body.atm.Rg
         return ca.sumsqr(v_rel)/(gamma*Rg*T)
     
-    # Unclear if these should be one function or not
-    def C_A(self):
-        pass
-    def C_Ny(self):
-        pass
-    def C_Nz(self):
-        pass
+    def mach(self, px, py, pz, vx, vy, vz):
+        """Returns the mach number"""
+        return ca.sqrt(self.mach_sqr(px, py, pz, vx, vy, vz))
+
+    def aero_coeffs(self, px, py, pz, vx, vy, vz, psi, theta):
+        cos_angles = self.cos_angles(px, py, pz, vx, vy, vz, psi, theta)
+        mach_sqr = self.mach_sqr(px, py, pz, vx, vy, vz)
 
     def ode(self, x, u):
-        """ODE vector of x"""
-        # Temp constants, these will be function calls later ig
-        C_A = -self.stage.aero.C_D
-        C_Ny = self.stage.aero.C_L
-        C_Nz = self.stage.aero.C_L
-        A_ref = self.stage.aero.A_ref
-
+        """ODE state vector x and control vector u"""
         m, px, py, pz, vx, vy, vz = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
         f, psi, theta = u[0], u[1], u[2]
+
+        coeffs = self.aero_coeffs()
+        C_A = coeffs[0]
+        C_Ny = coeffs[1]
+        C_Nz = coeffs[2]
+
+        A_ref = self.stage.aero.A_ref
         F_eff = self.F_eff(px, py, pz, f)
         Isp = self.Isp(px, py, pz)
         g = self.g(px, py, pz)
         rho = self.rho(px, py, pz)
         v_rel = self.v_rel(px, py, pz, vx, vy, vz)
-        ebx = self.ebx(psi, theta)
+
+        basis = self.vehicle_basis(psi, theta)
+        ebx = basis[0:3]
+        eby = basis[3:6]
+        ebz = basis[6:9]
 
         m_dot = -F_eff/(Isp*9.81e-3)
-        # vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[0] + C_Ny*eby[0] + C_Nz*ebz[0])
-        # vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[1] + C_Ny*eby[1] + C_Nz*ebz[1])
-        # vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*stage.aero.A_ref*ca.sumsqr(v_rel)*(C_A*ebx[2] + C_Ny*eby[2] + C_Nz*ebz[2])
+
+        F_thrust = F_eff/m*ebx
+        F_aero = 0.5/m*rho*A_ref*ca.sumsqr(v_rel)*(C_A*ebx + C_Ny*eby + C_Nz*ebz)
+
+        v_dot = g + F_thrust + F_aero
         # Drag only aerodynamics
-        vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*A_ref*ca.norm_2(v_rel)*C_A*v_rel[0]
-        vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*A_ref*ca.norm_2(v_rel)*C_A*v_rel[1]
-        vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*A_ref*ca.norm_2(v_rel)*C_A*v_rel[2]
+        # vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*A_ref*ca.norm_2(v_rel)*C_A*v_rel[0]
+        # vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*A_ref*ca.norm_2(v_rel)*C_A*v_rel[1]
+        # vz_dot = g[2] + F_eff/m*ebx[2] + 0.5/m*rho*A_ref*ca.norm_2(v_rel)*C_A*v_rel[2]
 
-        return ca.vertcat(m_dot, vx, vy, vz, vx_dot, vy_dot, vz_dot)
+        return ca.vertcat(m_dot, vx, vy, vz, v_dot)
     
-    def cos_alpha(self, x, u):
-        """Cosine of AoA"""
-        return self.cos_angles(x, u)[0]
+    def alpha(self, px, py, pz, vx, vy, vz, psi, theta):
+        """AoA in rads"""
+        return ca.acos(self.cos_angles(px, py, pz, vx, vy, vz, psi, theta)[0])
 
-    def q(self, x):
+    def q(self, px, py, pz, vx, vy, vz):
         """Dynamic pressure q"""
-        m, px, py, pz, vx, vy, vz = x[0], x[1], x[2], x[3], x[4], x[5], x[6]
         rho = self.rho(px, py, pz)
         v_rel = self.v_rel(px, py, pz, vx, vy, vz)
         return 0.5*rho*ca.sumsqr(v_rel)
