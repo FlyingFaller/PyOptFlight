@@ -1,6 +1,7 @@
 from .functions import *
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Callable
+import casadi as ca
 
 @dataclass
 class Constraint():
@@ -117,9 +118,18 @@ class Body(AutoRepr):
             self.H = atm_params.get("H")
             self.gamma = atm_params.get("gamma")
             self.Rg = atm_params.get("Rg")
-            self.C_T = atm_params.get("C_T")
             self.cutoff_altitude = atm_params.get("cutoff_altitude")
             self.color = atm_params.get("color", "gray")
+            T_data = atm_params.get("T", 273.15) # Get temperature, default to constant 0 C
+            if isinstance(T_data, str):
+                data_table = load_csv("defaults/"+T_data)
+                alt_range = data_table['data'][:, 0].astype(float) # rows
+                temp_range = data_table['data'][:, 1:].astype(float) # table of data 
+                # linear seems more robust, bspline may be more accurate when evaluations are garunteed to be in range
+                temp_lut = ca.interpolant('coeffs_lut','linear', [alt_range], temp_range)
+                self.T = lambda altitude: temp_lut(altitude)
+            else:
+                self.T = lambda altitude: float(T_data)
 
     def __init__(self, body_params):
         default_bodies = load_json(r"defaults/bodies.json")
@@ -143,14 +153,29 @@ class Body(AutoRepr):
 class Stage(AutoRepr):
     """Stores rocket stage mass, aerodynamics, propulsion, and limits."""
     class Aerodynamics(AutoRepr):
-        def __init__(self, aero_params):
-            self.C_D   = aero_params.get("C_D")
-            self.C_L   = aero_params.get("C_L")
-            self.C_A   = aero_params.get("C_A")
-            self.C_Ny  = aero_params.get("C_Ny")
-            self.C_Nz  = aero_params.get("C_Nz")
-            self.A_ref = aero_params.get("A_ref")
-            # TODO: load in C_A, C_Ny, C_Nz
+        def __init__(self, aero_params: dict, folder_path: str = None):
+            self.A_ref = aero_params.get("A_ref", 1.0)
+            self.C_D  = aero_params.get("C_D", 0.0)
+            self.C_L  = aero_params.get("C_L", 0.0)
+
+            C_A_data  = aero_params.get("C_A", 0.0)
+            C_Ny_data = aero_params.get("C_Ny", 0.0)
+            C_Nz_data = aero_params.get("C_Nz", 0.0)
+            self.C_A: Callable
+            self.C_Ny: Callable
+            self.C_Nz: Callable
+            for attr, data in zip(['C_A', 'C_Ny', 'C_Nz'], [C_A_data, C_Ny_data, C_Nz_data]):
+                if isinstance(data, str):
+                    data_table = load_csv(folder_path+"\\"+data)
+                    mach_range = data_table['header'][1:].astype(float) # columns
+                    angle_range = data_table['data'][:, 0].astype(float) # rows
+                    coeffs = data_table['data'][:, 1:].astype(float) # table of data 
+                    coeffs_flat = coeffs.ravel(order='F')
+                    # linear seems more robust, bspline may be more accurate when evaluations are garunteed to be in range
+                    coeffs_lut = ca.interpolant('coeffs_lut','linear',[angle_range, mach_range], coeffs_flat)
+                    setattr(self, attr, lambda mach, angle: coeffs_lut([angle, mach]))
+                else:
+                    setattr(self, attr, lambda mach, angle: float(data))
 
     class Propulsion(AutoRepr):
         def __init__(self, prop_params):
@@ -168,6 +193,7 @@ class Stage(AutoRepr):
 
         self.name = stage_params.get("name", None)
         self.description = stage_params.get("description", None)
+        self.folder_path = stage_params.get("folder_path", None)
 
         self.m_0 = stage_params.get("m_0")
         self.m_f = stage_params.get("m_f")
@@ -206,12 +232,12 @@ class Vehicle(AutoRepr):
     
     @classmethod
     def load_vehicle(cls, name:str) -> "Vehicle":
-        vehicle_path = f"defaults\\vehicles\\{name}\\vehicle.json"
-        vehicle_dict = load_json(vehicle_path)
+        vehicle_path = f"defaults\\vehicles\\{name}"
+        vehicle_dict = load_json(vehicle_path+"\\vehicle.json")
         vehicle_name = vehicle_dict.get("name", None)
         vehicle_description = vehicle_dict.get("description", None)
         stage_params_list = vehicle_dict.get('stages')
-        stages_objects = [Stage(stage_data) for stage_data in stage_params_list]
+        stages_objects: list[Stage] = [Stage(stage_data, vehicle_path) for stage_data in stage_params_list]
         return cls(name=vehicle_name, description=vehicle_description, stages=stages_objects)
 
 class SolverConfig(AutoRepr):
