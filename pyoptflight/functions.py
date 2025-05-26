@@ -53,7 +53,7 @@ def load_csv(
     skip_blank_lines: Optional[bool] = True,
     on_bad_lines: Optional[str] = 'skip',
     **pd_read_csv_kwargs
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, np.ndarray]:
     """Loads tables from a CSV"""
     if base_path:
         file_path = os.path.join(base_path, filename)
@@ -78,7 +78,7 @@ def load_csv(
         # Not a perfect parsing for every occation but should be manageble by whatever uses this function
         # Though I will say mixed-type numpy arrays are cursed and the used should be careful to extract the actual
         # data out if string labels are being used at the beginning of rows!!
-        result: Dict[str, Any] = {
+        result: Dict[str, np.ndarray] = {
             "header": df.columns.numpy(), 
             "data": df.to_numpy(na_value=np.nan),
         }
