@@ -132,46 +132,63 @@ class CallableProp(AutoRepr):
                  dimension: int, 
                  inputs: list[str] = None,
                  output: str = None, 
-                 interpolation_method: str = 'linear'):
+                 interp_method: str = 'linear'):
         self.data = data
         self.dimension = dimension
+        self.interp_method = interp_method
         self.inputs = inputs
         self.output = output
 
         if isinstance(data, (int, float)):
             self._callable = lambda *args: float(data)
         elif isinstance(data, dict):
-            X = np.array(data[inputs[0]]) # rows
-            if dimension == 1:
-                fX = np.array(data[output]) # data
-                lut = ca.interpolant('lut', interpolation_method, [X], fX)
-                self._callable = lambda x: lut(x)
-            elif dimension == 2:
-                Y = np.array(data[inputs[1]])
-                fXY = np.array(data[output])
-                fXY_flat = fXY.ravel(order="F")
-                lut = ca.interpolant('lut', interpolation_method, [X, Y], fXY_flat)
-                self._callable = lambda x: lut(x)
-            else:
-                raise Exception(f"Unsupported dimension {dimension}.")
+            self._callable = self._create_func_from_dict(data)
         elif isinstance(data, str):
-            data_table = path.load_csv_relative(data)
-            X = data_table['data'][:, 0].astype(float) # rows
-            if dimension == 1:
-                fX = data_table['data'][:, 1].astype(float) # data
-                lut = ca.interpolant('lut', interpolation_method, [X], fX)
-                self._callable = lambda x: lut(x)
-            elif dimension == 2:
-                Y = data_table['header'][1:].astype(float) # columns
-                fXY: np.ndarray = data_table['data'][:, 1:].astype(float) # data
-                fXY_flat = fXY.ravel(order="F")
-                lut = ca.interpolant('lut', interpolation_method, [X, Y], fXY_flat)
-                self._callable = lambda x, y: lut(x, y)
+            ext = Path(data).suffix
+            if ext == ".json":
+                self._callable = self._create_func_from_json(filename=data, path=path)
+            elif ext == ".csv":
+                self._callable = self._create_func_from_csv(filename=data, path=path)
             else:
-                raise Exception(f"Unsupported dimension {dimension}.")
+                raise NotImplementedError(f"File type of {ext} is not valid.")
         else:
             raise TypeError(f"Unsupported type of {type(data)} for {name} property.")
         
+    def _create_func_from_dict(self, data: dict):
+        X = np.array(data[self.inputs[0]]) # rows
+        if self.dimension == 1:
+            fX = np.array(data[self.output]) # data
+            lut = ca.interpolant('lut', self.interp_method, [X], fX)
+            return lambda x: lut(x)
+        elif self.dimension == 2:
+            Y = np.array(data[self.inputs[1]])
+            fXY = np.array(data[self.output])
+            fXY_flat = fXY.ravel(order="F")
+            lut = ca.interpolant('lut', self.interp_method, [X, Y], fXY_flat)
+            return lambda x: lut(x)
+        else:
+            raise Exception(f"Unsupported dimension {self.dimension}.")
+
+    def _create_func_from_csv(self, filename: str, path: PathManager):
+        data_table = path.load_csv_relative(filename)
+        X = data_table['data'][:, 0].astype(float) # rows
+        if self.dimension == 1:
+            fX = data_table['data'][:, 1].astype(float) # data
+            lut = ca.interpolant('lut', self.interp_method, [X], fX)
+            return lambda x: lut(x)
+        elif self.dimension == 2:
+            Y = data_table['header'][1:].astype(float) # columns
+            fXY: np.ndarray = data_table['data'][:, 1:].astype(float) # data
+            fXY_flat = fXY.ravel(order="F")
+            lut = ca.interpolant('lut', self.interp_method, [X, Y], fXY_flat)
+            return lambda x, y: lut(x, y)
+        else:
+            raise Exception(f"Unsupported dimension {self.dimension}.")
+
+    def _create_func_from_json(self, filename: str, path: PathManager):
+        data = path.load_json_relative(filename)
+        return self._create_func_from_dict(data)
+
     def __call__(self, *args: Any) -> float:
         return self._callable(*args)
     
@@ -193,7 +210,7 @@ class Body(AutoRepr):
                                   dimension=1, 
                                   inputs=["altitude"], 
                                   output="temperature",
-                                  interpolation_method="linear")
+                                  interp_method="linear")
 
     def __init__(self, 
                  body_params: dict,
