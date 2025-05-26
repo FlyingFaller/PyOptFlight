@@ -2,6 +2,7 @@ from .functions import *
 from dataclasses import dataclass
 from typing import Optional, List, Callable
 import casadi as ca
+from pathlib import Path
 
 @dataclass
 class Constraint():
@@ -110,50 +111,120 @@ class ConstraintSet(AutoRepr):
         """Allow dict-like access to constraints."""
         return getattr(self, constraint_name)
 
+class PathManager(AutoRepr):
+    """Simple class to keep track of file paths."""
+    def __init__(self, base_path: str | Path):
+        self.base_path = Path(base_path)
+    def get_path(self, relative_path: str) -> Path:
+        return self.base_path / relative_path
+    def load_json_relative(self, relative_path: str) -> dict[str, Any]:
+        return load_json(self.get_path(relative_path))
+    def load_csv_relative(self, relative_path: str) -> dict[str, np.ndarray]:
+        return load_csv(self.get_path(relative_path))
+
+class CallableProp(AutoRepr):
+    """This is a callable object that creates interpolants given data."""
+    """Maybe this should just be a function that returns a callable?"""
+    """I am not convinced..."""
+    def __init__(self, 
+                 data: int|float|str|dict,
+                 path: PathManager,
+                 dimension: int, 
+                 inputs: list[str] = None,
+                 output: str = None, 
+                 interpolation_method: str = 'linear'):
+        self.data = data
+        self.dimension = dimension
+        self.inputs = inputs
+        self.output = output
+
+        if isinstance(data, (int, float)):
+            self._callable = lambda *args: float(data)
+        elif isinstance(data, dict):
+            X = np.array(data[inputs[0]]) # rows
+            if dimension == 1:
+                fX = np.array(data[output]) # data
+                lut = ca.interpolant('lut', interpolation_method, [X], fX)
+                self._callable = lambda x: lut(x)
+            elif dimension == 2:
+                Y = np.array(data[inputs[1]])
+                fXY = np.array(data[output])
+                fXY_flat = fXY.ravel(order="F")
+                lut = ca.interpolant('lut', interpolation_method, [X, Y], fXY_flat)
+                self._callable = lambda x: lut(x)
+            else:
+                raise Exception(f"Unsupported dimension {dimension}.")
+        elif isinstance(data, str):
+            data_table = path.load_csv_relative(data)
+            X = data_table['data'][:, 0].astype(float) # rows
+            if dimension == 1:
+                fX = data_table['data'][:, 1].astype(float) # data
+                lut = ca.interpolant('lut', interpolation_method, [X], fX)
+                self._callable = lambda x: lut(x)
+            elif dimension == 2:
+                Y = data_table['header'][1:].astype(float) # columns
+                fXY: np.ndarray = data_table['data'][:, 1:].astype(float) # data
+                fXY_flat = fXY.ravel(order="F")
+                lut = ca.interpolant('lut', interpolation_method, [X, Y], fXY_flat)
+                self._callable = lambda x, y: lut(x, y)
+            else:
+                raise Exception(f"Unsupported dimension {dimension}.")
+        else:
+            raise TypeError(f"Unsupported type of {type(data)} for {name} property.")
+        
+    def __call__(self, *args: Any) -> float:
+        return self._callable(*args)
+    
 class Body(AutoRepr):
     """Stores celestial body parameters."""
     class Atmosphere(AutoRepr):
-        def __init__(self, atm_params):
+        def __init__(self, 
+                     atm_params: dict, 
+                     path: PathManager):
             self.rho_0 = atm_params.get("rho_0")
             self.H = atm_params.get("H")
             self.gamma = atm_params.get("gamma")
             self.Rg = atm_params.get("Rg")
             self.cutoff_altitude = atm_params.get("cutoff_altitude")
             self.color = atm_params.get("color", "gray")
-            T_data = atm_params.get("T", 273.15) # Get temperature, default to constant 0 C
-            if isinstance(T_data, str):
-                data_table = load_csv("defaults/"+T_data)
-                alt_range = data_table['data'][:, 0].astype(float) # rows
-                temp_range = data_table['data'][:, 1:].astype(float) # table of data 
-                # linear seems more robust, bspline may be more accurate when evaluations are garunteed to be in range
-                temp_lut = ca.interpolant('coeffs_lut','linear', [alt_range], temp_range)
-                self.T = lambda altitude: temp_lut(altitude)
-            else:
-                self.T = lambda altitude: float(T_data)
+            T_params = atm_params.get("T", 273.15) # Get temperature, default to constant 0 C
+            self.T = CallableProp(data=T_params, 
+                                  path=path, 
+                                  dimension=1, 
+                                  inputs=["altitude"], 
+                                  output="temperature",
+                                  interpolation_method="linear")
 
-    def __init__(self, body_params):
-        default_bodies = load_json(r"defaults/bodies.json")
+    def __init__(self, 
+                 body_params: dict,
+                 path: PathManager):
+        
+        data = body_params.get("data", {})
 
-        if isinstance(body_params, str):
-            if body_params in default_bodies:
-                body_params = default_bodies[body_params]
-            else:
-                raise ValueError(f"Unknown default body: {body_params}")
-        elif not isinstance(body_params, dict):
-            raise TypeError("Input must be a string or a dictionary")
-
-        self.r_0 = body_params.get("r_0")
-        self.g_0 = body_params.get("g_0")
-        self.mu = body_params.get("mu")
-        self.omega_0 = body_params.get("omega_0")
-        atm_params = body_params.get("atm", {})
-        self.atm = self.Atmosphere(atm_params) if atm_params else None
+        self.name = body_params.get("name")
+        self.description = body_params.get("description")
+        self.type = body_params.get("type")
         self.meshpath = body_params.get("meshpath")
+
+        self.r_0 = data.get("r_0")
+        self.g_0 = data.get("g_0")
+        self.mu = data.get("mu")
+        self.omega_0 = data.get("omega_0", 0)
+        atm_params = data.get("atm", {})
+        self.atm = self.Atmosphere(atm_params, path) if atm_params else None
+
+    @classmethod
+    def load(cls, body_name: str, base_dir: str = "bodies") -> "Body":
+        path = PathManager(Path(base_dir)/body_name)
+        body_params = path.load_json_relative("body.json")
+        return cls(body_params, path)
 
 class Stage(AutoRepr):
     """Stores rocket stage mass, aerodynamics, propulsion, and limits."""
     class Aerodynamics(AutoRepr):
-        def __init__(self, aero_params: dict, folder_path: str = None):
+        def __init__(self, 
+                     aero_params: dict, 
+                     path: PathManager):
             self.A_ref = aero_params.get("A_ref", 1.0)
             self.C_D  = aero_params.get("C_D", 0.0)
             self.C_L  = aero_params.get("C_L", 0.0)
@@ -161,21 +232,9 @@ class Stage(AutoRepr):
             C_A_data  = aero_params.get("C_A", 0.0)
             C_Ny_data = aero_params.get("C_Ny", 0.0)
             C_Nz_data = aero_params.get("C_Nz", 0.0)
-            self.C_A: Callable
-            self.C_Ny: Callable
-            self.C_Nz: Callable
-            for attr, data in zip(['C_A', 'C_Ny', 'C_Nz'], [C_A_data, C_Ny_data, C_Nz_data]):
-                if isinstance(data, str):
-                    data_table = load_csv(folder_path+"\\"+data)
-                    mach_range = data_table['header'][1:].astype(float) # columns
-                    angle_range = data_table['data'][:, 0].astype(float) # rows
-                    coeffs = data_table['data'][:, 1:].astype(float) # table of data 
-                    coeffs_flat = coeffs.ravel(order='F')
-                    # linear seems more robust, bspline may be more accurate when evaluations are garunteed to be in range
-                    coeffs_lut = ca.interpolant('coeffs_lut','linear',[angle_range, mach_range], coeffs_flat)
-                    setattr(self, attr, lambda mach, angle: coeffs_lut([angle, mach]))
-                else:
-                    setattr(self, attr, lambda mach, angle: float(data))
+            self.C_A = CallableProp(C_A_data, path, 2, ["angle", "mach"], "C_A", "bspline")
+            self.C_Ny = CallableProp(C_Ny_data, path, 2, ["angle", "mach"], "C_Ny", "bspline")
+            self.C_Nz = CallableProp(C_Nz_data, path, 2, ["angle", "mach"], "C_Nz", "bspline")
 
     class Propulsion(AutoRepr):
         def __init__(self, prop_params):
@@ -187,17 +246,18 @@ class Stage(AutoRepr):
             self.Isp_SL  = prop_params.get("Isp_SL", Isp)
             self.Isp_vac = prop_params.get("Isp_vac", Isp)
         
-    def __init__(self, stage_params):
+    def __init__(self, 
+                 stage_params: dict, 
+                 path: PathManager):
         if not isinstance(stage_params, dict):
-            raise TypeError("Input must be a string or a dictionary")
+            raise TypeError("Input must be a dictionary")
 
         self.name = stage_params.get("name", None)
         self.description = stage_params.get("description", None)
-        self.folder_path = stage_params.get("folder_path", None)
 
         self.m_0 = stage_params.get("m_0")
         self.m_f = stage_params.get("m_f")
-        self.aero = self.Aerodynamics(stage_params.get("aero", {}))
+        self.aero = self.Aerodynamics(stage_params.get("aero", {}), path)
         self.prop = self.Propulsion(stage_params.get("prop"))
 
         constraints = stage_params.get("constraints", {})
@@ -216,7 +276,10 @@ class Stage(AutoRepr):
         self.N = stage_params.get("N")
 
 class Vehicle(AutoRepr):
-    def __init__(self, stages: List[Stage], name: str = None, description: str = None):
+    def __init__(self, 
+                 stages: List[Stage], 
+                 name: str = None, 
+                 description: str = None):
         self.name = name
         self.description = description
         self.stages = stages
@@ -231,14 +294,14 @@ class Vehicle(AutoRepr):
         return iter(self.stages)
     
     @classmethod
-    def load_vehicle(cls, name:str) -> "Vehicle":
-        vehicle_path = f"defaults\\vehicles\\{name}"
-        vehicle_dict = load_json(vehicle_path+"\\vehicle.json")
-        vehicle_name = vehicle_dict.get("name", None)
-        vehicle_description = vehicle_dict.get("description", None)
-        stage_params_list = vehicle_dict.get('stages')
-        stages_objects: list[Stage] = [Stage(stage_data, vehicle_path) for stage_data in stage_params_list]
-        return cls(name=vehicle_name, description=vehicle_description, stages=stages_objects)
+    def load(cls, vehicle_name: str, base_dir: str = "vehicles") -> "Vehicle":
+        path = PathManager(Path(base_dir)/vehicle_name)
+        vehicle_params = path.load_json_relative("vehicle.json")
+        name = vehicle_params.get("name", None)
+        description = vehicle_params.get("description", None)
+        stage_params_list = vehicle_params.get('stages')
+        stages_objects: list[Stage] = [Stage(stage_params, path) for stage_params in stage_params_list]
+        return cls(name=name, description=description, stages=stages_objects)
 
 class SolverConfig(AutoRepr):
     def __init__(self, **kwargs):
