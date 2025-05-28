@@ -246,7 +246,7 @@ class Stage(AutoRepr):
             self.C_D  = aero_params.get("C_D", 0.0)
             self.C_L  = aero_params.get("C_L", 0.0)
 
-            C_A_data  = aero_params.get("C_A", 0.0)
+            C_A_data  = aero_params.get("C_A", -self.C_D) # TODO: Temp handling of C_D, need special handling later
             C_Ny_data = aero_params.get("C_Ny", 0.0)
             C_Nz_data = aero_params.get("C_Nz", 0.0)
             self.C_A = CallableProp(C_A_data, path, 2, ["angle", "mach"], "C_A", "bspline")
