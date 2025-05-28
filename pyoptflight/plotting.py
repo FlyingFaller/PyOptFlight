@@ -618,9 +618,9 @@ def plot_flight_data(solver: Solver,
 
     # 7: alpha, alpha_max
     def plot_alpha(ax: plt.Axes):
-        x = choose_xdata(data.alpha)
-        ax.plot(x, choose_raddeg(data.alpha.data), label='$\\alpha$', color='blue')
-        plot_constraints(ax, data.alpha, True, True)
+        x = choose_xdata(data.AoA_x)
+        ax.plot(x, choose_raddeg(data.AoA_x.data), label='$\\alpha$', color='blue')
+        plot_constraints(ax, data.AoA_x, True, True)
         ax.set_title('Angle of Attack')
         ax.set_xlabel(x_label)
         ax.set_ylabel('Angle of Attack ['+angle_label+']')
