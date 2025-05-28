@@ -88,24 +88,41 @@ class FlightSolution(AutoRepr):
             return result
         
         self.stage_num   = self.TimeSeriesData() # kN+k
+
+        self.mass        = self.TimeSeriesData() # kN+k
         self.pos         = self.TimeSeriesData() # kN+1
         self.vel         = self.TimeSeriesData() # kN+1
-        self.mass        = self.TimeSeriesData() # kN+k
+
         self.f           = self.TimeSeriesData() # kN
         self.psi         = self.TimeSeriesData() # kN
         self.theta       = self.TimeSeriesData() # kN
+
         self.h           = self.TimeSeriesData() # kN+1
-        self.f_eff       = self.TimeSeriesData() # kN
-        self.F_max       = self.TimeSeriesData() # kN
-        self.Isp         = self.TimeSeriesData() # kN+1
-        self.rho         = self.TimeSeriesData() # kN+1
         self.g           = self.TimeSeriesData() # kN+1
         self.wind        = self.TimeSeriesData() # kN+1
+        self.T           = self.TimeSeriesData() # kN+1
+        self.rho         = self.TimeSeriesData() # kN+1
+
+        self.v_rel       = self.TimeSeriesData() # kN+1
+
+        self.F_max       = self.TimeSeriesData() # kN+1
+        self.f_eff       = self.TimeSeriesData() # kN
+        self.F_eff       = self.TimeSeriesData() # kN
+        self.Isp         = self.TimeSeriesData() # kN+1
+
         self.ebx         = self.TimeSeriesData() # kN
         self.eby         = self.TimeSeriesData() # kN
         self.ebz         = self.TimeSeriesData() # kN
+
+        self.AoA_x       = self.TimeSeriesData() # kN
+        self.AoA_y       = self.TimeSeriesData() # kN
+        self.AoA_z       = self.TimeSeriesData() # kN
+        self.mach        = self.TimeSeriesData() # kN+1
+        self.C_A         = self.TimeSeriesData() # kN
+        self.C_Ny        = self.TimeSeriesData() # kN
+        self.C_Nz        = self.TimeSeriesData() # kN
         self.q           = self.TimeSeriesData() # kN+1
-        self.alpha       = self.TimeSeriesData() # kN
+
         self.tau         = self.TimeSeriesData() # kN-1
         self.body_rate_y = self.TimeSeriesData() # kN-1
         self.body_rate_z = self.TimeSeriesData() # kN-1
@@ -130,6 +147,8 @@ class FlightSolution(AutoRepr):
             t = t_list[i]
             n = N_list[i]
             sol = sols[k]
+            pos = X[i][1:4]
+            vel = X[i][4:7]
 
             # constraints
             max_cs = ConstraintSet.choose_max(cs_list[k], cs_list[k-1]) if stage_interface else cs_list[k]
@@ -144,33 +163,58 @@ class FlightSolution(AutoRepr):
             max_alpha = max_alpha if not (first_node or last_node or penult_node) else None
 
             # kN+1 nodes
-            self.pos.update(X[i][1:4], t, n)
-            self.vel.update(X[i][4:7], t, n)
-            self.h.update(float(physics[k].h(*X[i][1:4])), t, n)
-            self.Isp.update(float(physics[k].Isp(*X[i][1:4])), t, n)
-            self.rho.update(float(physics[k].rho(*X[i][1:4])), t, n)
-            self.g.update(np.array(physics[k].g(*X[i][1:4])).flatten(), t, n)
-            self.wind.update(np.array(physics[k].wind(*X[i][1:4])).flatten(), t, n)
-            self.F_max.update(float(physics[k].F_max(*X[i][1:4])), t, n)
-            self.q.update(float(physics[k].q(X[i])), t, n, max_q)
-
-            # kN+k nodes
-            self.mass.update(X[i][0], t, n)
             if stage_interface:
                 self.stage_num.update(k, t, n)
                 self.mass.update(sols[k].X[0][0], t, n)
             self.stage_num.update(k+1, t, n)
+            self.mass.update(X[i][0], t, n)
+
+            # kN+1 nodes
+            self.pos.update(pos, t, n)
+            self.vel.update(vel, t, n)
+
+            h = float(physics[k].h(pos))
+            self.h.update(h, t, n)
+
+            self.g.update(np.array(physics[k].g(pos)).flatten(), t, n)
+            self.wind.update(np.array(physics[k].wind(pos)).flatten(), t, n)
+            self.T.update(float(physics[k].T(h)), t, n)
+
+            rho = float(physics[k].rho(h))
+            self.rho.update(rho, t, n)
+
+            v_rel = np.array(physics[k].v_rel(pos, vel)).flatten()
+            self.v_rel.update(v_rel, t, n)
+
+            self.F_max.update(float(physics[k].F_max(h)), t, n)
+            self.Isp.update(float(physics[k].Isp(h)), t, n)
+
+            self.mach.update(float(physics[k].mach(h, v_rel)), t, n)
+            self.q.update(float(physics[k].q(v_rel, rho)), t, n, max_q)
 
             # kN nodes
             if not last_node: # controls
-                self.f.update(U[i][0], t, n, f_min)
-                self.psi.update(U[i][1], t, n)
-                self.theta.update(U[i][2], t, n)
-                self.f_eff.update(float(physics[k].f_eff(U[i][0])), t, n, f_min)
-                self.ebx.update(np.array(physics[k].ebx(*U[i][1:])).flatten(), t, n)
-                self.eby.update(np.array(physics[k].eby(*U[i][1:])).flatten(), t, n)
-                self.ebz.update(np.array(physics[k].ebz(*U[i][1:])).flatten(), t, n)
-                self.alpha.update(float(np.arccos(min(1, physics[k].cos_alpha(X[i], U[i])))), t, n, max_alpha)
+                f, psi, theta = U[i]
+                self.f.update(f, t, n, f_min)
+                self.psi.update(psi, t, n)
+                self.theta.update(theta, t, n)
+                self.f_eff.update(float(physics[k].f_eff(f)), t, n, f_min)
+                self.F_eff.update(float(physics[k].F_eff(h, f)), t, n, f_min)
+
+                basis = np.array(physics[k].vehicle_basis(psi, theta))
+                self.ebx.update(basis[:, 0], t, n)
+                self.eby.update(basis[:, 1], t, n)
+                self.ebz.update(basis[:, 2], t, n)
+
+                angles = np.array(physics[k].angles(v_rel, basis)).flatten()
+                self.AoA_x.update(angles[0], t, n, max_alpha)
+                self.AoA_y.update(angles[1], t, n)
+                self.AoA_z.update(angles[2], t, n)
+
+                coeffs = np.array(physics[k].aero_coeffs(h, v_rel, basis)).flatten()
+                self.C_A.update(coeffs[0], t, n)
+                self.C_Ny.update(coeffs[1], t, n)
+                self.C_Nz.update(coeffs[2], t, n)
             
             # kN-1
             if not first_node and not last_node: # control rates
