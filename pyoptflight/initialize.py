@@ -58,7 +58,7 @@ def _linear_methods(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, 
         case 'equal':
             seg_props = np.ones((context.nstages))/context.nstages
         case 'dV':
-            dV_stages = np.array([0.5*9.81e-3*(stage.prop.Isp_vac + stage.prop.Isp_SL)*np.log(stage.m_0/stage.m_f) for stage in context.stages])
+            dV_stages = np.array([0.5*9.81e-3*(stage.prop.Isp_vac + stage.prop.Isp_ASL)*np.log(stage.m_0/stage.m_f) for stage in context.stages])
             dV_available = np.sum(dV_stages)
             seg_props = dV_stages/dV_available
         case 'T_init':
@@ -108,11 +108,11 @@ def _linear_methods(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, 
                 diff = seg_positions[j + 1] - seg_positions[j]
                 # Compute a control vector (example: scaled version of the negative/positive direction).
                 if context.config.landing:
-                    ctrl_dir = -dir
+                    ctrl_dir = -diff/ np.linalg.norm(diff)
                 else:
-                    ctrl_dir = dir
+                    ctrl_dir = diff/ np.linalg.norm(diff)
                 psi = np.arctan2(ctrl_dir[1], ctrl_dir[0])
-                theta = np.arccos(ctrl_dir[2]) - np.pi/2
+                theta = np.arccos(max(min(ctrl_dir[2], 1), -1)) - np.pi/2
                 seg_controls.append([seg_f[j], psi, theta])
             else:
                 diff = seg_positions[j] - seg_positions[j - 1]
@@ -215,10 +215,10 @@ def gravity_turn(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, opt
     #######################
     ### SETUP SYMBOLICS ###
     #######################
-    x = ca.SX.sym('[m, v, beta, h, phi]', 5, 1)
+    x = ca.MX.sym('[m, v, beta, h, phi]', 5, 1)
     m, v, beta, h, phi = x[0], x[1], x[2], x[3], x[4]
-    u = ca.SX.sym('u')
-    T = ca.SX.sym('T')
+    u = ca.MX.sym('u')
+    T = ca.MX.sym('T')
 
     nx = x.size1() # Number of states (5)
     nu = u.size1() # Number of control vars (1)
@@ -268,13 +268,25 @@ def gravity_turn(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, opt
     ########################
     for k, stage in enumerate(context.stages):
         # EOMs
-        F = stage.prop.F_SL * u
-        F_drag = 0.5 * stage.aero.A_ref * stage.aero.C_D * context.body.atm.rho_0 * ca.exp(-h / context.body.atm.H) * v ** 2
+        gamma = context.body.atm.gamma
+        Rg = context.body.atm.Rg
+        temp = context.body.atm.T(h)
+        mach_sqr = v**2/(gamma*Rg*temp)
+        match context.config.aero_model:
+            case "axial_normal":
+                coeff = -stage.aero.C_A(0.99, mach_sqr)
+            case "lift_drag":
+                coeff = stage.aero.C_D(0.99, mach_sqr)
+            case _:
+                raise NotImplementedError(f"context.config.aero_model: {context.config.aero_model} is not an implemented.")
+
+        F = stage.prop.F_ASL * u
+        F_drag = 0.5 * stage.aero.A_ref * coeff * context.body.atm.rho_0 * ca.exp(-h / context.body.atm.H) * v ** 2
         r = h + context.body.r_0
         g = context.body.g_0 * (context.body.r_0 / r) ** 2
         v_phi = v * ca.sin(beta)
         vr = v * ca.cos(beta)
-        Isp = stage.prop.Isp_vac + (stage.prop.Isp_SL - stage.prop.Isp_vac) * ca.exp(-h / context.body.atm.H)
+        Isp = stage.prop.Isp_vac + (stage.prop.Isp_ASL - stage.prop.Isp_vac) * ca.exp(-h / context.body.atm.H)
 
         # Build symbolic expressions for ODE right hand side
         m_dot = -(F / (Isp * 9.81e-3))
@@ -285,14 +297,24 @@ def gravity_turn(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, opt
 
         # Create integrator that works from 0 to parameterized dt #
         ode = ca.vertcat(m_dot, v_dot, beta_dot, h_dot, phi_dot)
-        dae = {'x': x, 'p': ca.vertcat(u, T), 'ode': T/context.N[k] * ode}
-        int_ops = {'nonlinear_solver_iteration': 'functional'}
-        I = ca.integrator('I', 'cvodes', dae, 0.0, 1.0, int_ops)
+        # dae = {'x': x, 'p': ca.vertcat(u, T), 'ode': T/context.N[k] * ode}
+        # int_ops = {'nonlinear_solver_iteration': 'functional'}
+        # I = ca.integrator('I', 'cvodes', dae, 0.0, 1.0, int_ops)
+        F_ode = ca.Function('F_ode', [x, u], [ode])
+        dt = ca.MX.sym("dt")
+        k1 = F_ode(x, u)
+        k2 = F_ode(x + dt/2 * k1, u)
+        k3 = F_ode(x + dt/2 * k2, u)
+        k4 = F_ode(x + dt * k3, u)
+        x_next = x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+        F_int = ca.Function('F_int', [x, u, dt], [x_next])
 
         # Integrate from 0 to N for the given stage k and enforce EOMs
         for i in range(0, context.N[k]):
-            next_x = I(x0=X[k][i], p=ca.vertcat(U[k][i], V[k]))
-            G.append(next_x['xf'] - X[k][i+1]) # we will constrain this part of G to be == 0
+            # next_x = I(x0=X[k][i], p=ca.vertcat(U[k][i], V[k]))
+            next_x = F_int(X[k][i], U[k][i], V[k]/context.N[k])
+            # G.append(next_x['xf'] - X[k][i+1]) # we will constrain this part of G to be == 0
+            G.append(next_x - X[k][i+1])
             lbg += nx*[0]
             ubg += nx*[0]
 
