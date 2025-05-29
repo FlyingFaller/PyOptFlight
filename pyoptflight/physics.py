@@ -70,7 +70,7 @@ class StagePhysics(AutoRepr):
     def F_max(self, h): # h(px, py, pz)
         """Max thrust"""
         F_vac = self.stage.prop.F_vac
-        F_SL = self.stage.prop.F_SL
+        F_SL = self.stage.prop.F_ASL
         H = self.body.atm.H
         F_max = F_vac + (F_SL - F_vac)*ca.exp(-h/H)
         return F_max
@@ -88,7 +88,7 @@ class StagePhysics(AutoRepr):
     def Isp(self, h): # h(px, py, pz)
         """Specific impulse"""
         Isp_vac = self.stage.prop.Isp_vac
-        Isp_SL = self.stage.prop.Isp_SL
+        Isp_SL = self.stage.prop.Isp_ASL
         H = self.body.atm.H
         Isp = Isp_vac + (Isp_SL - Isp_vac)*ca.exp(-h/H)
         return Isp
@@ -108,7 +108,7 @@ class StagePhysics(AutoRepr):
 
     def angles(self, v_rel, basis):
         """Returns the angle (in radians) between air-relative velocity and the vehicle basis"""
-        return ca.acos(self.cos_angles(basis, v_rel))
+        return ca.acos(self.cos_angles(v_rel, basis))
 
     ### MACH ###
     def mach_sqr(self, h, v_rel): # v_rel(vx, vy, vz, wind(px, py)), T(h(px, py, pz))
@@ -121,17 +121,65 @@ class StagePhysics(AutoRepr):
     
     def mach(self, h, v_rel):
         """Returns the mach number"""
-        return ca.sqrt(self.mach_sqr(v_rel, h))
+        return ca.sqrt(self.mach_sqr(h, v_rel))
 
     ### AERO COEFFICIENTS ###
-    def aero_coeffs(self, h, v_rel, basis):
+    def axial_normal_coeffs(self, h, v_rel, basis):
         """Returns C_A, C_Ny, C_Nz aerodynamic coefficients"""
-        cos_angles = self.cos_angles(basis, v_rel)
-        mach_sqr = self.mach_sqr(v_rel, h)
-        C_A = self.stage.aero.C_A(cos_angles[0], mach_sqr)
+        cos_angles = self.cos_angles(v_rel, basis)
+        mach_sqr = self.mach_sqr(h, v_rel)
+        C_A  = self.stage.aero.C_A(cos_angles[0], mach_sqr)
         C_Ny = self.stage.aero.C_Ny(cos_angles[1], mach_sqr)
         C_Nz = self.stage.aero.C_Nz(cos_angles[2], mach_sqr)
         return ca.vertcat(C_A, C_Ny, C_Nz)
+
+    def lift_drag_coeffs(self, h, v_rel, basis):
+        """Returns C_L, C_D, C_S aerodynamic coefficients"""
+        cos_angles = self.cos_angles(v_rel, basis)
+        mach_sqr = self.mach_sqr(h, v_rel)
+        # print(cos_angles[0])
+        # print(type(cos_angles[0]))
+        # print(mach_sqr)
+        # print(type(mach_sqr))
+        C_L = self.stage.aero.C_L(cos_angles[0], mach_sqr)
+        C_D = self.stage.aero.C_D(cos_angles[1], mach_sqr)
+        C_S = self.stage.aero.C_S(cos_angles[2], mach_sqr)
+        return ca.vertcat(C_L, C_D, C_S)
+
+    ### AERO FORCES ###
+    def axial_normal_force(self, h, pos, vel, basis):
+        """Returns the sum of the aerodynamic forces using C_A, C_Ny, C_Nz"""
+        A_ref = self.stage.aero.A_ref
+        rho = self.rho(h)
+        v_rel = self.v_rel(pos, vel)
+        ebx, eby, ebz = basis[0:3], basis[3:6], basis[6:9]
+        coeffs = self.axial_normal_coeffs(h, v_rel, basis)
+        C_A, C_Ny, C_Nz = coeffs[0], coeffs[1], coeffs[2]
+        return 0.5*rho*A_ref*ca.sumsqr(v_rel)*(C_A*ebx + C_Ny*eby + C_Nz*ebz)
+
+    def lift_drag_force(self, h, pos, vel, basis):
+        """Returns the sum of the aerodynamic forces using C_L, C_D, C_S"""
+        A_ref = self.stage.aero.A_ref
+        rho = self.rho(h)
+        v_rel = self.v_rel(pos, vel)
+        ebx = basis[0:3]
+        coeffs = self.lift_drag_coeffs(h, v_rel, basis)
+        C_L, C_D, C_S = coeffs[0], coeffs[1], coeffs[2]
+
+        v_dir = v_rel/ca.norm_2(v_rel)
+        drag_dir = -v_dir
+        lift_dir_unnorm = ebx - v_dir*ca.dot(ebx, v_dir)
+
+        # Effectively an if-else statement to prevent div by zero
+        x_input = ca.MX.sym('x_input', 3)
+        norm_x = ca.norm_2(x_input)
+        f_norm = ca.Function('f_norm', 
+                             [x_input], 
+                             [ca.if_else(norm_x < 1e-9, ca.MX.zeros(3), x_input/norm_x)])
+        
+        lift_dir = f_norm(lift_dir_unnorm)
+        slip_dir = ca.cross(lift_dir, drag_dir)
+        return 0.5*rho*A_ref*ca.sumsqr(v_rel)*(C_D*drag_dir + C_L*lift_dir + C_S*slip_dir)
 
     ### DYNAMIC PRESSURE ###
     def q(self, v_rel, rho):
@@ -148,31 +196,26 @@ class StagePhysics(AutoRepr):
         f, psi, theta = u[0], u[1], u[2]
 
         # Get intermediaries
-        A_ref = self.stage.aero.A_ref
         h = self.h(pos)
         F_eff = self.F_eff(h, f)
         Isp = self.Isp(h)
         g = self.g(pos)
-        rho = self.rho(h)
-        v_rel = self.v_rel(pos, vel)
         basis = self.vehicle_basis(psi, theta)
-        
-        # Get aerodynamic coefficients
-        coeffs = self.aero_coeffs(h, v_rel, basis)
-        C_A = coeffs[0]
-        C_Ny = coeffs[1]
-        C_Nz = coeffs[2]
-        
         ebx = basis[0:3]
-        eby = basis[3:6]
-        ebz = basis[6:9]
 
+        # Calculate forces
+        F_thrust = F_eff*ebx
+        match self.config.aero_model:
+            case "axial_normal":
+                F_aero = self.axial_normal_force(h, pos, vel, basis)
+            case "lift_drag":
+                F_aero = self.lift_drag_force(h, pos, vel, basis)
+            case _:
+                raise NotImplementedError(f"self.config.aero_model: {self.config.aero_model} is not an implemented.")
+
+        # Calculate derivatives
         m_dot = -F_eff/(Isp*9.81e-3)
-
-        F_thrust = F_eff/m*ebx
-        F_aero = 0.5/m*rho*A_ref*ca.sumsqr(v_rel)*(C_A*ebx + C_Ny*eby + C_Nz*ebz)
-
-        v_dot = g + F_thrust + F_aero
+        v_dot = g + (F_thrust + F_aero)/m
         # Drag only aerodynamics
         # vx_dot = g[0] + F_eff/m*ebx[0] + 0.5/m*rho*A_ref*ca.norm_2(v_rel)*C_A*v_rel[0]
         # vy_dot = g[1] + F_eff/m*ebx[1] + 0.5/m*rho*A_ref*ca.norm_2(v_rel)*C_A*v_rel[1]
