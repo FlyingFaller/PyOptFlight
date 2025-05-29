@@ -165,7 +165,7 @@ class CallableProp(AutoRepr):
             fXY = np.array(data[self.output])
             fXY_flat = fXY.ravel(order="F")
             lut = ca.interpolant('lut', self.interp_method, [X, Y], fXY_flat)
-            return lambda x: lut(x)
+            return lambda x, y: lut(ca.vertcat(x, y))
         else:
             raise Exception(f"Unsupported dimension {self.dimension}.")
 
@@ -181,7 +181,7 @@ class CallableProp(AutoRepr):
             fXY: np.ndarray = data_table['data'][:, 1:].astype(float) # data
             fXY_flat = fXY.ravel(order="F")
             lut = ca.interpolant('lut', self.interp_method, [X, Y], fXY_flat)
-            return lambda x, y: lut(x, y)
+            return lambda x, y: lut(ca.vertcat(x, y))
         else:
             raise Exception(f"Unsupported dimension {self.dimension}.")
 
@@ -214,7 +214,7 @@ class Body(AutoRepr):
 
     def __init__(self, 
                  body_params: dict,
-                 path: PathManager):
+                 path: PathManager = None):
         
         data = body_params.get("data", {})
 
@@ -222,6 +222,7 @@ class Body(AutoRepr):
         self.description = body_params.get("description")
         self.type = body_params.get("type")
         self.meshpath = body_params.get("meshpath")
+        self.path = path
 
         self.r_0 = data.get("r_0")
         self.g_0 = data.get("g_0")
@@ -243,24 +244,28 @@ class Stage(AutoRepr):
                      aero_params: dict, 
                      path: PathManager):
             self.A_ref = aero_params.get("A_ref", 1.0)
-            self.C_D  = aero_params.get("C_D", 0.0)
-            self.C_L  = aero_params.get("C_L", 0.0)
+            C_L_data = aero_params.get("C_L", 0.0)
+            C_D_data = aero_params.get("C_D", 0.0)
+            C_S_data = aero_params.get("C_S", 0.0)
+            self.C_L = CallableProp(C_L_data, path, 2, ["angle", "mach"], "C_L" "linear")
+            self.C_D = CallableProp(C_D_data, path, 2, ["angle", "mach"], "C_D" "linear")
+            self.C_S = CallableProp(C_S_data, path, 2, ["angle", "mach"], "C_S" "linear")
 
-            C_A_data  = aero_params.get("C_A", -self.C_D) # TODO: Temp handling of C_D, need special handling later
+            C_A_data  = aero_params.get("C_A",  0.0)
             C_Ny_data = aero_params.get("C_Ny", 0.0)
             C_Nz_data = aero_params.get("C_Nz", 0.0)
-            self.C_A = CallableProp(C_A_data, path, 2, ["angle", "mach"], "C_A", "bspline")
-            self.C_Ny = CallableProp(C_Ny_data, path, 2, ["angle", "mach"], "C_Ny", "bspline")
-            self.C_Nz = CallableProp(C_Nz_data, path, 2, ["angle", "mach"], "C_Nz", "bspline")
+            self.C_A  = CallableProp(C_A_data,  path, 2, ["angle", "mach"], "C_A",  "linear")
+            self.C_Ny = CallableProp(C_Ny_data, path, 2, ["angle", "mach"], "C_Ny", "linear")
+            self.C_Nz = CallableProp(C_Nz_data, path, 2, ["angle", "mach"], "C_Nz", "linear")
 
     class Propulsion(AutoRepr):
         def __init__(self, prop_params):
             # TODO:  Add better modeling of pressure variant engine performance
             F = prop_params.get("F")
             Isp = prop_params.get("Isp")
-            self.F_SL    = prop_params.get("F_SL", F)
+            self.F_ASL   = prop_params.get("F_ASL", F)
             self.F_vac   = prop_params.get("F_vac", F)
-            self.Isp_SL  = prop_params.get("Isp_SL", Isp)
+            self.Isp_ASL = prop_params.get("Isp_ASL", Isp)
             self.Isp_vac = prop_params.get("Isp_vac", Isp)
         
     def __init__(self, 
@@ -296,10 +301,12 @@ class Vehicle(AutoRepr):
     def __init__(self, 
                  stages: List[Stage], 
                  name: str = None, 
-                 description: str = None):
+                 description: str = None,
+                 path: PathManager = None):
         self.name = name
         self.description = description
         self.stages = stages
+        self.path = path
 
     def __len__(self) -> int:
         return len(self.stages)
@@ -318,37 +325,38 @@ class Vehicle(AutoRepr):
         description = vehicle_params.get("description", None)
         stage_params_list = vehicle_params.get('stages')
         stages_objects: list[Stage] = [Stage(stage_params, path) for stage_params in stage_params_list]
-        return cls(name=name, description=description, stages=stages_objects)
+        return cls(name=name, description=description, stages=stages_objects, path=path)
 
 class SolverConfig(AutoRepr):
     def __init__(self, **kwargs):
         ### NLP Settings ###
-        self.constraints_tol = kwargs.get('constraints_tol', 1e-6)
-        self.solver_tol = kwargs.get('solver_tol', 1e-4)
-        self.verbosity = kwargs.get('verbosity', 3)
+        self.constraints_tol    = kwargs.get('constraints_tol', 1e-6)
+        self.solver_tol         = kwargs.get('solver_tol', 1e-4)
+        self.verbosity          = kwargs.get('verbosity', 3)
         self.bound_relax_factor = kwargs.get('bound_relax_factor', 0)
         self.nlp_scaling_method = kwargs.get('nlp_scaling_method', 'none')
-        self.mumps_mem_percent = kwargs.get('mumps_mem_percent', 16000)
+        self.mumps_mem_percent  = kwargs.get('mumps_mem_percent', 16000)
         self.integration_method = kwargs.get('integration_method', 'cvodes')
-        self.max_iter = kwargs.get('max_iter', 500)
+        self.max_iter           = kwargs.get('max_iter', 500)
 
         ### Problem Settings ###
-        self.landing = kwargs.get('landing', False)
+        self.landing       = kwargs.get('landing', False)
         self.pmerid_offset = kwargs.get('pmerid_offset', 0) # Azimuth angle of prime meridian
+        self.aero_model    = kwargs.get('aero_model', 'axial_normal') # 'axial_normal' or 'lift_drag' for now
 
         ### Global Defaults ###
         self.T_init = kwargs.get('T_init', 100)
-        self.T_min = kwargs.get('T_min', 0)
-        self.T_max = kwargs.get('T_max', 600)
-        self.N = kwargs.get('N', 300)
+        self.T_min  = kwargs.get('T_min', 0)
+        self.T_max  = kwargs.get('T_max', 600)
+        self.N      = kwargs.get('N', 300)
 
         self.global_constraints = ConstraintSet(
-            max_q         = kwargs.get('max_q'),
-            max_alpha     = kwargs.get('max_alpha'),
+            max_q           = kwargs.get('max_q'),
+            max_alpha       = kwargs.get('max_alpha'),
             max_body_rate_y = kwargs.get('max_body_rate_y'),
-            max_body_rate_z  = kwargs.get('max_body_rate_z'),
-            max_tau     = kwargs.get('max_tau'),
-            f_min         = kwargs.get('f_min')
+            max_body_rate_z = kwargs.get('max_body_rate_z'),
+            max_tau         = kwargs.get('max_tau'),
+            f_min           = kwargs.get('f_min')
         )
         self.force_constraints = kwargs.get('force_constraints')
 
