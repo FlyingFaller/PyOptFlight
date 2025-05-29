@@ -79,7 +79,7 @@ def load_csv(
         # Though I will say mixed-type numpy arrays are cursed and the used should be careful to extract the actual
         # data out if string labels are being used at the beginning of rows!!
         result: Dict[str, np.ndarray] = {
-            "header": df.columns.numpy(), 
+            "header": df.columns.to_numpy(), 
             "data": df.to_numpy(na_value=np.nan),
         }
 
