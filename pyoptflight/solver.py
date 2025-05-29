@@ -211,7 +211,7 @@ class FlightSolution(AutoRepr):
                 self.AoA_y.update(angles[1], t, n)
                 self.AoA_z.update(angles[2], t, n)
 
-                coeffs = np.array(physics[k].aero_coeffs(h, v_rel, basis)).flatten()
+                coeffs = np.array(physics[k].axial_normal_coeffs(h, v_rel, basis)).flatten()
                 self.C_A.update(coeffs[0], t, n)
                 self.C_Ny.update(coeffs[1], t, n)
                 self.C_Nz.update(coeffs[2], t, n)
@@ -419,8 +419,10 @@ class Solver(AutoRepr):
         self.physics = StagePhysics.create_physics(self.context) # call this in case constraints have changed
 
         ### symbolic state and control vectors ###
-        x = ca.SX.sym('[m, px, py, pz, vx, vy, vz]', 7, 1)
-        u = ca.SX.sym('[f, psi, theta]', 3, 1)
+        # x = ca.SX.sym('[m, px, py, pz, vx, vy, vz]', 7, 1)
+        # u = ca.SX.sym('[f, psi, theta]', 3, 1)
+        x = ca.MX.sym('[m, px, py, pz, vx, vy, vz]', 7, 1)
+        u = ca.MX.sym('[f, psi, theta]', 3, 1)
 
         nx = x.size1() # Number of states (10)
         nu = u.size1() # number of control vars (3)
@@ -437,7 +439,8 @@ class Solver(AutoRepr):
         for k in range(nstages):
             ode = self.physics[k].ode(x, u)
             F_ode = ca.Function('F_ode', [x, u], [ode])
-            dt = ca.SX.sym("dt")
+            # dt = ca.SX.sym("dt")
+            dt = ca.MX.sym("dt")
             
             match self.context.config.integration_method:
                 case 'RK4':
@@ -512,7 +515,8 @@ class Solver(AutoRepr):
         # Create solver
         nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
         ipopt_opts = {
-            'expand': self.context.config.integration_method == 'RK4',
+            # 'expand': self.context.config.integration_method == 'RK4',
+            'expand': False,
             'ipopt.nlp_scaling_method': 'none',
             'ipopt.tol': self.context.config.solver_tol,
             'ipopt.max_iter': self.context.config.max_iter
