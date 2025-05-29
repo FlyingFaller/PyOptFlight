@@ -399,7 +399,7 @@ def plot_celestial(body: Body,
                    size=(1000, 1000)):
     
     body_dict = {'r': body.r_0, 
-                 'path': body.meshpath}
+                 'path': body.path.get_path(body.meshpath)}
     
     if body.atm is not None:
         atm_dict = {'r': body.r_0+body.atm.cutoff_altitude,
