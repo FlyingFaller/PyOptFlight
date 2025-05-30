@@ -112,7 +112,8 @@ def _linear_methods(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, 
                 else:
                     ctrl_dir = diff/ np.linalg.norm(diff)
                 psi = np.arctan2(ctrl_dir[1], ctrl_dir[0])
-                theta = np.arccos(max(min(ctrl_dir[2], 1), -1)) - np.pi/2
+                # theta = np.arccos(max(min(ctrl_dir[2], 1), -1)) - np.pi/2
+                theta = -np.arcsin(ctrl_dir[2])
                 seg_controls.append([seg_f[j], psi, theta])
             else:
                 diff = seg_positions[j] - seg_positions[j - 1]
