@@ -139,7 +139,7 @@ class FlightSolution(AutoRepr):
         U = np.concatenate([sol.U for sol in sols])
 
         for i in range(sum_N+1):
-            k = np.searchsorted(cum_N[:-1], i, side='right') - 1 # 'current' stage index, this breaks down at stage interfaces
+            k = np.searchsorted(cum_N[:-1], i, side='right') - 1 # 'current' stage index, this breaks down at stage interfaces where index jumps to next stage
             stage_interface = i in cum_N[1:-1] # True if i is a stage interface node
             first_node = i+1 == 1 # True if first node of loop 
             last_node = i+1 == sum_N+1 # True if last node of loop
@@ -162,13 +162,13 @@ class FlightSolution(AutoRepr):
             max_q = max_q if not (first_node or last_node) else None
             max_alpha = max_alpha if not (first_node or last_node or penult_node) else None
 
-            # kN+1 nodes
+            # kN+k nodes
+            self.mass.update(X[i][0], t, n) # previous stage mass
             if stage_interface:
                 self.stage_num.update(k, t, n)
-                self.mass.update(sols[k].X[0][0], t, n)
+                self.mass.update(sols[k].X[0][0], t, n) # next stage initial mass removed during stack
             self.stage_num.update(k+1, t, n)
-            self.mass.update(X[i][0], t, n)
-
+        
             # kN+1 nodes
             self.pos.update(pos, t, n)
             self.vel.update(vel, t, n)
@@ -505,7 +505,10 @@ class Solver(AutoRepr):
                 if cs_list[k].f_min.enabled and cs_list[k].f_min.value is not None:
                     G.append((U[i][0] - cs_list[k].f_min.value + self.context.delta)*(U[i][0] - cs_list[k].f_min.value))
                 if cs_list[k].max_alpha.enabled and cs_list[k].max_alpha.value is not None:
-                    G.append(self.physics[k].cos_alpha(X[i], U[i]))
+                    v_rel = self.physics[k].angles(X[i][1:4], X[i][4:7])
+                    basis = self.physics[k].vehicle_basis(U[i][1], U[i][2])
+                    cos_angles = self.physics[k].angles(v_rel, basis)
+                    G.append(cos_angles[0])
 
         ge_f = self.xf.get_ge(X[-1], U[-1], T_sum, self.context)
         G += ge_f['g']
