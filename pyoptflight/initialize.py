@@ -69,6 +69,7 @@ def _linear_methods(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, 
     p0, p1 = x_data['x0']['pos'], x_data['xf']['pos']
     v0, v1 = x_data['x0']['vel'], x_data['xf']['vel']
     v0_mag, v1_mag = np.linalg.norm(v0), np.linalg.norm(v1)
+    v0_dir, v1_dir = v0/v0_mag, v1/v1_mag
 
     ts = np.linspace(0, 1, 1000)
     pos_sample = np.array([get_pos(t, p0, p1, v0, v1) for t in ts])
@@ -97,30 +98,60 @@ def _linear_methods(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, 
         
         # Linearly interpolate the velocity magnitudes for each point.
         seg_vel_mags = (1 - seg_t) * v0_mag + seg_t * v1_mag
-        
+
+        # Linearly interpolate between full throttle initially and zero throttle at stage burnout
+        # may get better results with just 0.5 throttle constant or some other method TODO
         seg_f = (1 - seg_t) * 1.0 + seg_t * 0.0
 
-        seg_velocities = []
-        seg_controls = []
+        # seg_velocities = []
+        # seg_controls = []
         # Compute the velocity (and control) at each point from the finite-difference tangent.
-        for j in range(context.N[k] + 1):
-            if j < context.N[k]:
-                diff = seg_positions[j + 1] - seg_positions[j]
-                # Compute a control vector (example: scaled version of the negative/positive direction).
-                if context.config.landing:
-                    ctrl_dir = -diff/ np.linalg.norm(diff)
-                else:
-                    ctrl_dir = diff/ np.linalg.norm(diff)
-                psi = np.arctan2(ctrl_dir[1], ctrl_dir[0])
-                # theta = np.arccos(max(min(ctrl_dir[2], 1), -1)) - np.pi/2
-                theta = -np.arcsin(ctrl_dir[2])
-                seg_controls.append([seg_f[j], psi, theta])
-            else:
-                diff = seg_positions[j] - seg_positions[j - 1]
-            # Normalize the finite difference to get the direction.
-            dir = diff / np.linalg.norm(diff)
-            seg_velocities.append(seg_vel_mags[j] * dir)
+        # for j in range(context.N[k] + 1):
+        #     if j < context.N[k]:
+        #         diff = seg_positions[j + 1] - seg_positions[j]
+        #         # Compute a control vector (example: scaled version of the negative/positive direction).
+        #         if context.config.landing:
+        #             ctrl_dir = -diff/ np.linalg.norm(diff)
+        #         else:
+        #             ctrl_dir = diff/ np.linalg.norm(diff)
+        #         psi = np.arctan2(ctrl_dir[1], ctrl_dir[0])
+        #         # theta = np.arccos(max(min(ctrl_dir[2], 1), -1)) - np.pi/2
+        #         theta = -np.arcsin(ctrl_dir[2])
+        #         seg_controls.append([seg_f[j], psi, theta])
+        #     else:
+        #         diff = seg_positions[j] - seg_positions[j - 1]
+        #     # Normalize the finite difference to get the direction.
+        #     dir = diff / np.linalg.norm(diff)
+        #     seg_velocities.append(seg_vel_mags[j] * dir)
         
+        # sketchy computation of veloicity
+        seg_velocities = []
+        for j in range(context.N[k] + 1):
+            if j < context.N[k]: # if not last node in stage
+                pos_diff = seg_positions[j+1] - seg_positions[j] # forward difference
+            else:
+                pos_diff = seg_positions[j] - seg_positions[j-1] # backward difference
+            pos_dir = pos_diff/np.linalg.norm(pos_diff)
+            curr_t = seg_t[j]
+            # linear interpolation between initial vel dir, trajectory, and final vel dir to ensure velocities generally follow trajectory
+            # there must be a smarter way to do this whole thing TODO!
+            if curr_t < 0.5:
+                vel_dir = v0_dir*(1 - curr_t/0.5) + pos_dir*curr_t/0.5
+            else:
+                vel_dir = pos_dir*(1 - (curr_t-0.5)/0.5) + v1_dir*(curr_t-0.5)/0.5
+            vel_dir /= np.linalg.norm(vel_dir)
+            seg_velocities.append(seg_vel_mags[j] * vel_dir)
+
+        # derive control inputs from changes in velocity.
+        # Vehicle should probably point toward the change in velocity? This seems reasonable.
+        seg_controls = []
+        for j in range(context.N[k]):
+            vel_diff = seg_velocities[j+1] - seg_velocities[j]
+            accel_dir = vel_diff/np.linalg.norm(vel_diff)
+            psi = np.arctan2(accel_dir[1], accel_dir[0])
+            theta = -np.arcsin(accel_dir[2])
+            seg_controls.append([seg_f[j], psi, theta])
+
         # Compute the mass at each point by linear interpolation between the stage's initial and final masses.
         seg_masses = []
         for t_lin in np.linspace(0, 1, context.N[k] + 1):
