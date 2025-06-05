@@ -159,3 +159,30 @@ def state_to_kep(state_vec: np.ndarray, μ: float) -> tuple[float, float, float,
         ω = np.arctan2(np.dot(np.cross(N_vec, e_vec), h_vec/h), np.dot(N_vec, e_vec))
         ν = np.arctan2(np.dot(np.cross(e_vec, r_vec), h_vec/h), np.dot(e_vec, r_vec))
     return e, a, i, ω, Ω, ν, h_vec, e_vec
+
+def RK4_integrator(x: ca.SX|ca.MX, u: ca.SX|ca.MX, ode: ca.SX|ca.MX) -> ca.Function:
+    F_ode = ca.Function('F_ode', [x, u], [ode])
+    if isinstance(x, ca.MX):
+        dt = ca.MX.sym("dt")
+    else:
+        dt = ca.SX.sym("dt")
+    k1 = F_ode(x, u)
+    k2 = F_ode(x + dt/2 * k1, u)
+    k3 = F_ode(x + dt/2 * k2, u)
+    k4 = F_ode(x + dt * k3, u)
+    x_next = x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+    F_int = ca.Function('F_int', [x, u, dt], [x_next])
+    return F_int
+
+def CVODES_integrator(x: ca.SX|ca.MX, u: ca.SX|ca.MX, ode: ca.MX) -> ca.Function:
+    F_ode = ca.Function('F_ode', [x, u], [ode])
+    if isinstance(x, ca.MX):
+        dt = ca.MX.sym("dt")
+    else:
+        dt = ca.SX.sym("dt")
+    dae = {'x': x, 'u':u, 'p': dt, 'ode': dt*F_ode(x, u)}
+    int_opts = {'nonlinear_solver_iteration': 'functional'}
+    I = ca.integrator('I', 'cvodes', dae, 0.0, 1.0, int_opts)
+    F_int = ca.Function('F_int', [x, u, dt], [I(x0=x, u=u, p=dt)['xf']])
+    return F_int
+    
