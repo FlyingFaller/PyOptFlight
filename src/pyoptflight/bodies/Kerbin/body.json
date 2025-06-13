@@ -1,0 +1,22 @@
+{
+    "name": "Kerbin",
+    "description": null,
+    "type": "planet",
+    "meshpath": "Kerbin.jpg",
+    "data": 
+    {
+        "r_0": 600,
+        "g_0": 9.81e-3,
+        "mu": 3.5316000e3,
+        "omega_0": 2.915709e-4,
+        "atm": {
+            "rho_0": 1.225,
+            "H": 5.6,
+            "gamma": 1.4,
+            "Rg": 287.05,
+            "T": 288.15,
+            "cutoff_altitude": 75,
+            "color": "steelblue"
+        }
+    }
+}
