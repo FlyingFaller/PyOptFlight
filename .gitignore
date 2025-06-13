@@ -11,5 +11,6 @@ __pycache__/
 *.c
 *.so
 pyoptflight.egg-info/
+src/pyoptflight.egg-info/
 # Python virtual environment
 .venv/
