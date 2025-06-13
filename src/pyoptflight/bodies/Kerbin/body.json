@@ -14,7 +14,7 @@
             "H": 5.6,
             "gamma": 1.4,
             "Rg": 287.05,
-            "T": 288.15,
+            "T": "temperature_data.csv",
             "cutoff_altitude": 75,
             "color": "steelblue"
         }
