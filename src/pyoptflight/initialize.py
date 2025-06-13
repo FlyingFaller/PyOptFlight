@@ -306,9 +306,9 @@ def gravity_turn(context: "SolverContext", x0: BoundaryObj, xf: BoundaryObj, opt
         mach_sqr = v**2/(gamma*Rg*temp)
         match context.config.aero_model:
             case "axial_normal":
-                coeff = -stage.aero.C_A(0.99, mach_sqr)
+                coeff = -stage.aero.C_A(1, mach_sqr)
             case "lift_drag":
-                coeff = stage.aero.C_D(0.99, mach_sqr)
+                coeff = stage.aero.C_D(1, mach_sqr)
             case _:
                 raise NotImplementedError(f"context.config.aero_model: {context.config.aero_model} is not an implemented.")
 
