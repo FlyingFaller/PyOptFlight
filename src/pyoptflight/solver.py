@@ -502,12 +502,14 @@ class Solver(AutoRepr):
 
         # Create solver
         nlp = {'x': V, 'f': opt_func, 'g': ca.vertcat(*G)}
+        x_scaling = nlp['x'].size1()*[1]
+        g_scaling = nlp['g'].size1()*[1]
         ipopt_opts = {
             # 'expand': self.context.config.integration_method == 'RK4',
             'expand': False,
-            'ipopt.nlp_scaling_method': 'none',
+            'ipopt.nlp_scaling_method': 'user-scaling',
             'ipopt.tol': self.context.config.solver_tol,
-            'ipopt.max_iter': self.context.config.max_iter
+            'ipopt.max_iter': self.context.config.max_iter,
             }
         nlpsolver = ca.nlpsol('nlpsolver', 'ipopt', nlp, ipopt_opts)
         self.nlpsolver = nlpsolver
