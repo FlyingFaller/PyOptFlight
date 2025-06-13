@@ -10,6 +10,7 @@ dependencies = [
     "ipympl>=0.9.7",
     "krpc>=0.5.4",
     "matplotlib>=3.10.3",
+    "nbformat>=5.10.4",
     "numpy>=2.3.0",
     "pandas>=2.3.0",
     "plotly>=6.1.2",
