@@ -1,0 +1,22 @@
+{
+    "name": "Mars",
+    "description": null,
+    "type": "planet",
+    "meshpath": "Mars.jpg",
+    "data": 
+    {
+        "r_0": 3389.5,
+        "g_0": 3.73e-3,
+        "mu": 4.282837e4,
+        "omega_0": 7.088218e-5,
+        "atm": {
+            "rho_0": 0.02,
+            "H": 11.1,
+            "gamma": 1.29,
+            "Rg": 188.42,
+            "T": 210,
+            "cutoff_altitude": 80,
+            "color": "tan"
+        }
+    }
+}

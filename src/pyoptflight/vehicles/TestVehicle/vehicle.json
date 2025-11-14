@@ -1,0 +1,52 @@
+{
+    "name": "PyOptFlight Test Vehicle",
+    "description": "A simple, two stage, test vehicle for Kerbin.",
+    "stages": 
+    [
+        {
+            "name": "First Stage",
+            "description": "First stage",
+            "aero": {
+                "C_A":  "AxialNormalCoeffs/stage1_ca.csv",
+                "C_Ny": "AxialNormalCoeffs/stage1_cny.csv",
+                "C_Nz": "AxialNormalCoeffs/stage1_cnz.csv",
+                "C_L": "LiftDragCoeffs/stage1_cl.csv",
+                "C_D": "LiftDragCoeffs/stage1_cd.csv",
+                "C_S": "LiftDragCoeffs/stage1_cs.csv",
+                "A_ref": 1.227184630308513
+            },
+            "prop": {
+                "Isp_ASL": 265,
+                "Isp_vac": 310,
+                "F_ASL": 0.205161,
+                "F_vac": 0.240000
+            },
+            "constraints": {},
+            "m_0": 9.6,
+            "m_f": 5.6
+        },
+        {
+            "name": "Second Stage",
+            "description": "Second stage",
+            "aero": {
+                "C_A":  "AxialNormalCoeffs/stage2_ca.csv",
+                "C_Ny": "AxialNormalCoeffs/stage2_cny.csv",
+                "C_Nz": "AxialNormalCoeffs/stage2_cnz.csv",
+                "C_L": "LiftDragCoeffs/stage2_cl.csv",
+                "C_D": "LiftDragCoeffs/stage2_cd.csv",
+                "C_S": "LiftDragCoeffs/stage2_cs.csv",
+                "A_ref": 1.227184630308513
+            },
+            "prop": {
+                "Isp_ASL": 85,
+                "Isp_vac": 345,
+                "F_ASL": 0.014783,
+                "F_vac": 0.060000
+            },
+            "constraints": {},
+            "m_0": 3.4,
+            "m_f": 1.4
+        }
+        
+    ]
+}
